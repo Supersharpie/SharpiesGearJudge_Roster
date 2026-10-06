@@ -1,0 +1,9 @@
+## Interface: 16001, 20506
+## Title: Sharpie's Gear Judge - Roster (Alt Upgrades)
+## Notes: Shows which of your alts an item upgrades, and a grid of every character's gear scores.
+## Author: Supersharpie
+## Version: 1.0.0
+## Dependencies: SharpiesGearJudge
+## SavedVariables: SGJ_RosterDB
+
+Roster.lua

@@ -1,0 +1,28 @@
+name: Publish to CurseForge
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # lets the packager attach the zip to the GitHub release
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # CurseForge shows this release's notes: the newest "## " section of CHANGELOG.md
+      - name: Release notes from CHANGELOG.md
+        run: awk '/^## / { if (p) exit; p = 1 } p' CHANGELOG.md > RELEASE_NOTES.md
+
+      - name: Package and Upload
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -p 1730879
+        env:
+          CF_API_KEY: ${{ secrets.CURSEFORGE_TOKEN }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
