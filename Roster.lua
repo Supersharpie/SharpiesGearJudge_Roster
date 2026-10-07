@@ -49,13 +49,22 @@ local SLOT_LABELS = {
     [16] = MAINHANDSLOT, [17] = SECONDARYHANDSLOT, [18] = RANGEDSLOT,
 }
 local TWO_HAND = { INVTYPE_2HWEAPON = true, INVTYPE_STAFF = true, INVTYPE_POLEARM = true }
+-- Relic subclasses (armour class 4) and the class that uses them.
+local RELIC_CLASS = { [7] = "PALADIN", [8] = "DRUID", [9] = "SHAMAN" }
+-- Account-wide scoring options saved with each snapshot, so an alt's new
+-- items are scored the same way as its saved gear.
+local SCORING_KEYS = { "EnchantMode", "GemMode", "GemQuality", "AssumeCampingBuffs" }
 
 local Roster = { rev = 0, cache = {}, cacheSize = 0 }
 
 -- =========================================================================
 -- 1. SMALL HELPERS
 -- =========================================================================
+-- A character's Roster key is its GUID: WoW Forever names have two parts and
+-- UnitName returns only the first, so names can repeat across characters.
 local function PlayerKey()
+    local guid = UnitGUID and UnitGUID("player")
+    if guid then return guid end
     if MSC and MSC.GetPlayerKey then return MSC:GetPlayerKey() end
     return (UnitName("player") or "Unknown") .. "-" .. (GetRealmName() or "Local")
 end
@@ -108,20 +117,220 @@ end
 -- mode reads the enchant off whoever is logged in, which is meaningless for
 -- an alt, so Roster scores it as raw stats (on both sides of the compare).
 -- =========================================================================
-local function RawScore(link, slotId, weights, spec)
-    local stats = MSC.SafeGetItemStats(link, slotId, weights, spec)
+-- Weapon types a class can wear but not attack with (Forever Hunters and
+-- thrown weapons) score on stats only. The core applies the logged-in
+-- class's list, so for an alt Roster applies the alt's list instead.
+local DPS_KEYS = { "MSC_WEAPON_DPS", "ITEM_MOD_DAMAGE_PER_SECOND_SHORT", "MSC_WEAPON_SPEED" }
+local function StatsOnlyFor(alt, link, stats)
+    if not alt then return stats end
+    local _, _, _, _, _, classID, subID = GetItemInfoInstant(link)
+    if classID ~= 2 or not subID then return stats end
+    local mine = MSC.CurrentClass and MSC.CurrentClass.StatsOnlyWeapons
+    local altOnly = (alt.statsOnly and alt.statsOnly[subID]) and true or false
+    local myOnly = (mine and mine[subID]) and true or false
+    if altOnly == myOnly then return stats end
+    local out = {}
+    for k, v in pairs(stats) do out[k] = v end
+    if altOnly then
+        for _, k in ipairs(DPS_KEYS) do out[k] = nil end
+    elseif MSC.GetRawItemStats then
+        -- the core stripped the DPS for the logged-in class: put it back
+        local raw = MSC.GetRawItemStats(link) or {}
+        for _, k in ipairs(DPS_KEYS) do out[k] = raw[k] end
+        if MSC.IsForever and out.MSC_WEAPON_DPS and not out.ITEM_MOD_DAMAGE_PER_SECOND_SHORT then
+            out.ITEM_MOD_DAMAGE_PER_SECOND_SHORT = out.MSC_WEAPON_DPS
+        end
+    end
+    return out
+end
+
+-- A Libram, Idol or Totem judged for an alt of another class than the
+-- logged-in one: returns its item ID (nil for anything else).
+local function CrossClassRelic(alt, link)
+    if not alt or not alt.class then return nil end
+    local id, _, _, _, _, classID, subID = GetItemInfoInstant(link)
+    if classID ~= 4 or not RELIC_CLASS[subID] then return nil end
+    if alt.class == select(2, UnitClass("player")) then return nil end
+    return id
+end
+
+-- Cross-class relics need the core's per-class relic table (3.2.1+); on
+-- older cores they're skipped rather than scored as ~0.
+local function RelicBlocked(alt, link)
+    return (CrossClassRelic(alt, link) and not MSC.GetClassRelicBonus) and true or false
+end
+
+-- The core adds relic stats for the logged-in class only: swap them for the alt's class.
+local function RelicFor(alt, link, stats, spec)
+    local relicID = CrossClassRelic(alt, link)
+    if not relicID or not MSC.GetClassRelicBonus then return stats end
+    local out = {}
+    for k, v in pairs(stats) do out[k] = v end
+    local cc = MSC.CurrentClass
+    if cc and cc.GetRelicBonus then
+        local ok, mine = pcall(cc.GetRelicBonus, cc, relicID, spec or "")
+        if ok and type(mine) == "table" then
+            for k, v in pairs(mine) do
+                if type(v) == "number" and v > 0 and type(out[k]) == "number" then
+                    out[k] = out[k] - v
+                    if out[k] <= 0 then out[k] = nil end
+                end
+            end
+        end
+    end
+    local ok, theirs = pcall(MSC.GetClassRelicBonus, alt.class, relicID, spec or "")
+    if ok and type(theirs) == "table" then
+        for k, v in pairs(theirs) do
+            if type(v) == "number" and v > 0 then out[k] = (out[k] or 0) + v end
+        end
+    end
+    return out
+end
+
+local function RawScore(link, slotId, weights, spec, alt)
+    local stats = StatsOnlyFor(alt, link, MSC.SafeGetItemStats(link, slotId, weights, spec))
+    stats = RelicFor(alt, link, stats, spec)
     return MSC.GetItemScore(stats, weights, spec, slotId) or 0
 end
 
-local function ScoreItem(link, slotId, weights, spec)
+-- The scoring options a character's snapshot was taken with (live ones for
+-- old snapshots). "Current Only" enchants read as raw stats (see above).
+local function ScoringOptions()
     local s = SGJ_Settings
-    local saved = s and s.EnchantMode
-    if saved == 2 then s.EnchantMode = 1 end
-    local ok, score = pcall(RawScore, link, slotId, weights, spec)
-    if saved == 2 then s.EnchantMode = saved end
+    if not s then return nil end
+    local out = {}
+    for _, k in ipairs(SCORING_KEYS) do out[k] = s[k] end
+    out.AssumeCampingBuffs = s.AssumeCampingBuffs and true or false
+    return out
+end
+
+local function ScoringSig(alt)
+    local src = (alt and alt.scoring) or SGJ_Settings or {}
+    local live = SGJ_Settings or {}
+    local function V(k) local v = src[k]; if v == nil then v = live[k] end; return tostring(v) end
+    return V("EnchantMode") .. "|" .. V("GemMode") .. "|" .. V("GemQuality") .. "|" .. V("AssumeCampingBuffs")
+end
+
+-- alt: the saved character the item is scored for (nil = the logged-in one).
+-- The alt's saved scoring options are applied for the call and always restored.
+local function ScoreItem(link, slotId, weights, spec, alt)
+    local s = SGJ_Settings
+    local e, g, q, c
+    if s then
+        e, g, q, c = s.EnchantMode, s.GemMode, s.GemQuality, s.AssumeCampingBuffs
+        local want = alt and alt.scoring
+        if want then
+            for _, k in ipairs(SCORING_KEYS) do
+                if want[k] ~= nil then s[k] = want[k] end
+            end
+        end
+        if s.EnchantMode == 2 then s.EnchantMode = 1 end
+    end
+    local ok, score = pcall(RawScore, link, slotId, weights, spec, alt)
+    if s then s.EnchantMode, s.GemMode, s.GemQuality, s.AssumeCampingBuffs = e, g, q, c end
     if ok then return score end
     if MSC.Debug then print("|cff00ccffSGJ Roster|r score error:", score) end
     return nil
+end
+
+-- Class and racial weapon bonuses (Weaponmaster, Hack and Slash, Sword
+-- Specialization...), main and off hand only, like the core. For an alt the
+-- core runs the alt's class code with the alt's saved race, level, attack
+-- power and talent ranks (MSC.BonusContext). Cores without that support
+-- (before 3.2.1) skip weapon bonuses on both sides of the compare.
+local function HasBonusContext() return MSC.ClassWeaponBonus and MSC.CtxRace and true or false end
+
+local function WeaponBonus(link, slotId, weights, spec, alt, sd, otherLink)
+    if (slotId ~= 16 and slotId ~= 17) or not link or not HasBonusContext() then return 0 end
+    if not alt then
+        local ok, b = pcall(MSC.GetWeaponSpecBonus, MSC, link, MSC.CurrentClass, spec, weights, slotId, otherLink)
+        return (ok and tonumber(b)) or 0
+    end
+    local fn = MSC.ClassWeaponBonus[alt.class or ""]
+    if not fn then return 0 end
+    local prev = MSC.BonusContext
+    MSC.BonusContext = { race = alt.raceToken, level = alt.level, ap = alt.ap, talentRanks = (sd and sd.talentRanks) or {} }
+    local ok, b = pcall(fn, nil, link, weights, slotId, spec, otherLink)
+    MSC.BonusContext = prev
+    return (ok and tonumber(b)) or 0
+end
+
+-- Item score plus weapon bonus. otherLink: the weapon in the other hand.
+local function FullScore(link, slotId, weights, spec, alt, sd, otherLink)
+    local score = ScoreItem(link, slotId, weights, spec, alt)
+    if not score then return nil end
+    return score + WeaponBonus(link, slotId, weights, spec, alt, sd, otherLink)
+end
+
+-- ---------------------------------------------------------------- set bonuses
+-- Scored with the character's own weights, the same way the core scores them.
+local function SetIDOf(link)
+    local id = link and GetItemInfoInstant(link)
+    return id and MSC.ItemSetMap and MSC.ItemSetMap[id]
+end
+
+local equivScratch = {}
+local function BonusDataScore(data, weights, spec)
+    local score = 0
+    if data.stats then score = score + (MSC.GetItemScore(data.stats, weights, spec) or 0) end
+    if data.equiv then
+        local best = 0
+        for stat, val in pairs(data.equiv) do
+            equivScratch[stat] = val
+            local v = MSC.GetItemScore(equivScratch, weights, spec) or 0
+            equivScratch[stat] = nil
+            if v > best then best = v end
+        end
+        score = score + best
+    end
+    if not data.stats and not data.equiv and data.score then score = score + data.score end
+    return score
+end
+
+-- Value of a set's bonuses at `count` pieces; also the highest tier reached.
+local function SetValue(setID, count, weights, spec)
+    local tiers = MSC.SetBonusScores and MSC.SetBonusScores[setID]
+    if not tiers or count <= 0 then return 0, 0 end
+    local total, top = 0, 0
+    for req, data in pairs(tiers) do
+        local r = tonumber(req)
+        if r and count >= r and type(data) == "table" then
+            total = total + BonusDataScore(data, weights, spec)
+            if r > top then top = r end
+        end
+    end
+    return total, top
+end
+
+-- Set bonus change from putting newLink in place of the items in `replaced`
+-- slots. Returns score delta, tier gained (or nil), tier broken (or nil).
+local function SetDelta(sd, spec, newLink, replaced)
+    if not MSC.ItemSetMap then return 0 end
+    local slots = sd.slots
+    local counts = {}
+    for _, e in pairs(slots) do
+        local id = SetIDOf(e.link)
+        if id then counts[id] = (counts[id] or 0) + 1 end
+    end
+    local newSet = SetIDOf(newLink)
+    local after = {}
+    if newSet then after[newSet] = (counts[newSet] or 0) + 1 end
+    for _, slotId in ipairs(replaced) do
+        local id = slots[slotId] and SetIDOf(slots[slotId].link)
+        if id then after[id] = (after[id] or counts[id] or 0) - 1 end
+    end
+    local delta, gained, broken = 0, nil, nil
+    for id, n in pairs(after) do
+        local before = counts[id] or 0
+        if n ~= before then
+            local vb, tb = SetValue(id, before, sd.weights, spec)
+            local va, ta = SetValue(id, n, sd.weights, spec)
+            delta = delta + (va - vb)
+            if ta > tb then gained = math_max(gained or 0, ta) end
+            if ta < tb then broken = math_max(broken or 0, tb) end
+        end
+    end
+    return delta, gained, broken
 end
 
 -- =========================================================================
@@ -145,14 +354,23 @@ local function CanDualWieldNow()
     return false
 end
 
--- Slots an item could go in, for scoring stashed (bag/bank) items.
-local function CandidateSlots(equipLoc)
+-- Slots an item could go in, for scoring stashed (bag/bank/mail) items.
+-- One-handers only count for the off hand on characters that can dual wield.
+local function CandidateSlots(equipLoc, canDW)
     if equipLoc == "INVTYPE_FINGER" then return { 11 } end
     if equipLoc == "INVTYPE_TRINKET" then return { 13 } end
-    if equipLoc == "INVTYPE_WEAPON" then return { 16, 17 } end
+    if equipLoc == "INVTYPE_WEAPON" then return canDW and { 16, 17 } or { 16 } end
     local s = MSC.SlotMap and MSC.SlotMap[equipLoc]
     if s and s ~= 4 then return { s } end
     return nil
+end
+
+-- What a two-hander has to beat: both hands' items plus their combined
+-- weapon bonus (a racial counts once).
+local function BothHandsScore(slots, pairBonus)
+    local mh, oh = slots[16], slots[17]
+    local mh2H = mh and mh.twoHand
+    return (mh and (mh.raw or mh.score) or 0) + ((not mh2H and oh) and (oh.raw or oh.score) or 0) + (pairBonus or 0)
 end
 
 -- The lowest equipped score an item in this slot would have to beat (a ring
@@ -165,17 +383,25 @@ end
 
 -- Bag and bank items this character is keeping for later: only the ones that
 -- score above what's equipped in their slot (so they'd be worn eventually).
-local function SnapshotStash(weights, spec, slots, stashItems, state)
+local function OtherHandLink(slots, slotId)
+    local other = (slotId == 16 and slots[17]) or (slotId == 17 and slots[16]) or nil
+    return other and other.link
+end
+
+local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pairBonus)
     local out = {}
     for _, it in ipairs(stashItems) do
-        local cands = CandidateSlots(it.loc)
+        local cands = CandidateSlots(it.loc, canDW)
         if cands then
             local scores, keep = {}, false
             for _, slotId in ipairs(cands) do
-                local sc = ScoreItem(it.link, slotId, weights, spec)
+                local other = (not TWO_HAND[it.loc]) and OtherHandLink(slots, slotId) or nil
+                local sc = FullScore(it.link, slotId, weights, spec, nil, nil, other)
                 if not sc then state.missing = true; sc = 0 end
                 scores[slotId] = sc
-                if sc > EquippedFloor(slots, slotId) + 0.05 then keep = true end
+                -- a two-hander replaces both hands, so it has to beat both
+                local floor = TWO_HAND[it.loc] and BothHandsScore(slots, pairBonus) or EquippedFloor(slots, slotId)
+                if sc > floor + 0.05 then keep = true end
             end
             if keep then
                 out[#out + 1] = { link = it.link, req = it.req, where = it.where, twoHand = TWO_HAND[it.loc] or nil, scores = scores }
@@ -185,21 +411,51 @@ local function SnapshotStash(weights, spec, slots, stashItems, state)
     return out
 end
 
-local function SnapshotSpec(weights, spec, gear, state, stashItems)
+-- This character's talent ranks by key, for weapon bonuses scored later on another character.
+local function TalentRanks()
+    local out = {}
+    local talents = MSC.CurrentClass and MSC.CurrentClass.Talents
+    if talents and MSC.GetTalentRank then
+        for key in pairs(talents) do
+            local ok, r = pcall(MSC.GetTalentRank, MSC, key)
+            if ok and type(r) == "number" and r > 0 then out[key] = r end
+        end
+    end
+    return out
+end
+
+local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
     local slots, total = {}, 0
     for _, slotId in ipairs(GEAR_SLOTS) do
         local link = gear[slotId]
         if link then
             if not GetItemInfo(link) then state.missing = true end
-            local score = ScoreItem(link, slotId, weights, spec)
-            if not score then state.missing = true; score = 0 end
+            local raw = ScoreItem(link, slotId, weights, spec)
+            if not raw then state.missing = true; raw = 0 end
             local loc = select(4, GetItemInfoInstant(link))
-            slots[slotId] = { link = link, score = score, twoHand = TWO_HAND[loc] or nil }
-            total = total + score
+            slots[slotId] = { link = link, raw = raw, score = raw, twoHand = TWO_HAND[loc] or nil }
         end
     end
-    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state)
-    return { pretty = PrettyName(spec), weights = CopyScalars(weights), slots = slots, total = total, stash = stash }
+    -- Weapon bonuses: each hand's bonus next to the other hand (what a swap in
+    -- that hand changes), and both hands together (what a two-hander replaces).
+    local mh, oh = slots[16], slots[17]
+    if mh then mh.score = mh.raw + WeaponBonus(mh.link, 16, weights, spec, nil, nil, oh and oh.link) end
+    if oh then oh.score = oh.raw + WeaponBonus(oh.link, 17, weights, spec, nil, nil, mh and mh.link) end
+    local pairBonus = (mh and WeaponBonus(mh.link, 16, weights, spec) or 0)
+        + (oh and WeaponBonus(oh.link, 17, weights, spec, nil, nil, mh and mh.link) or 0)
+    for _, e in pairs(slots) do total = total + e.score end
+    -- Active set bonuses count toward the total, like the core's character score.
+    if MSC.ItemSetMap then
+        local counts = {}
+        for _, e in pairs(slots) do
+            local id = SetIDOf(e.link)
+            if id then counts[id] = (counts[id] or 0) + 1 end
+        end
+        for id, n in pairs(counts) do total = total + SetValue(id, n, weights, spec) end
+    end
+    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state, canDW, pairBonus)
+    return { pretty = PrettyName(spec), weights = CopyScalars(weights), slots = slots, total = total, stash = stash,
+             pairBonus = pairBonus, talentRanks = TalentRanks() }
 end
 
 local AltCanUse, ItemInfo  -- defined in sections 4 and 5
@@ -207,18 +463,46 @@ local AltCanUse, ItemInfo  -- defined in sections 4 and 5
 local GetNumSlots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
 local GetSlotLink = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
 
-local function BankBagIds()
+-- Bank containers. Clients with character bank tabs (Forever, like Retail)
+-- use Enum.BagIndex.CharacterBankTab_N; Classic uses the bank container plus
+-- the bank bags after the backpack bags (never the reagent bag).
+-- (Like Syndicator: Classic bank bags are NUM_BAG_SLOTS + 1..n; the enum's
+-- bank bag values are wrong there. skip: a container ID to leave out.)
+local function ClassicBankIds(skip)
     local ids = { BANK_CONTAINER or -1 }
     local first = (NUM_BAG_SLOTS or 4) + 1
-    for b = first, first + (NUM_BANKBAGSLOTS or 6) - 1 do ids[#ids + 1] = b end
+    for b = first, first + (NUM_BANKBAGSLOTS or 6) - 1 do
+        if b ~= skip then ids[#ids + 1] = b end
+    end
     return ids
+end
+
+local function BankBagIds()
+    local E = Enum and Enum.BagIndex
+    if E and E.CharacterBankTab_1 and GetNumSlots then
+        local ids, slots = {}, 0
+        for i = 1, 12 do
+            local id = E["CharacterBankTab_" .. i]
+            if not id then break end
+            ids[#ids + 1] = id
+            local ok, n = pcall(GetNumSlots, id)
+            slots = slots + ((ok and tonumber(n)) or 0)
+        end
+        -- Tabs defined but empty (not bought, or this client still uses the
+        -- old bank): read the Classic layout instead.
+        if slots > 0 then return ids end
+        -- this client has a reagent bag right after the backpack bags
+        return ClassicBankIds(E.ReagentBag)
+    end
+    return ClassicBankIds()
 end
 
 local function BagLinks(ids, state)
     local links = {}
     if not (GetNumSlots and GetSlotLink) then return links end
     for _, bag in ipairs(ids) do
-        for slot = 1, (GetNumSlots(bag) or 0) do
+        local ok, n = pcall(GetNumSlots, bag)
+        for slot = 1, ((ok and tonumber(n)) or 0) do
             local link = GetSlotLink(bag, slot)
             if link and IsEquippableItem(link) then
                 if not GetItemInfo(link) then state.missing = true end
@@ -229,11 +513,16 @@ local function BagLinks(ids, state)
     return links
 end
 
--- Equippable attachments in this character's mailbox (only readable while it's open).
+-- Equippable attachments in this character's mailbox (only readable while
+-- it's open). Second result: true when every mail was read (the inbox has
+-- loaded and none are held back by the 50-mail display limit).
 local function InboxLinks(state)
     local links = {}
-    if not (GetInboxNumItems and GetInboxItemLink) then return links end
-    for i = 1, (GetInboxNumItems() or 0) do
+    if not (GetInboxNumItems and GetInboxItemLink) then return links, false end
+    local shown, total = GetInboxNumItems()
+    shown = shown or 0
+    local complete = Roster.inboxLoaded and (total == nil or shown >= total) or false
+    for i = 1, shown do
         for a = 1, (ATTACHMENTS_MAX_RECEIVE or 16) do
             local link = GetInboxItemLink(i, a)
             if link and IsEquippableItem(link) then
@@ -242,7 +531,7 @@ local function InboxLinks(state)
             end
         end
     end
-    return links
+    return links, complete
 end
 
 -- Equippable bag, bank and mailbox items this character can use, now or at a
@@ -251,7 +540,14 @@ local function CollectStash(self, prev, state)
     local bagIds = {}
     for b = 0, (NUM_BAG_SLOTS or 4) do bagIds[#bagIds + 1] = b end
     local bank = Roster.bankOpen and BagLinks(BankBagIds(), state) or (prev and prev.bankLinks) or {}
-    local inbox = Roster.mailOpen and InboxLinks(state) or (prev and prev.inboxLinks) or {}
+    -- The inbox only counts once it has loaded (MAIL_INBOX_UPDATE).
+    local inbox, inboxComplete
+    if Roster.mailOpen and Roster.inboxLoaded then
+        inbox, inboxComplete = InboxLinks(state)
+    else
+        inbox = (prev and prev.inboxLinks) or {}
+    end
+    local bagLinks = BagLinks(bagIds, state)
     local items = {}
     local function Add(link, where)
         local info = ItemInfo(link)
@@ -259,10 +555,48 @@ local function CollectStash(self, prev, state)
             items[#items + 1] = { link = link, loc = info.equipLoc, req = info.reqLevel, where = where }
         end
     end
-    for _, link in ipairs(BagLinks(bagIds, state)) do Add(link, "bags") end
+    for _, link in ipairs(bagLinks) do Add(link, "bags") end
     for _, link in ipairs(bank) do Add(link, "bank") end
     for _, link in ipairs(inbox) do Add(link, "mail") end
-    return items, bank, inbox
+    -- Links read live just now (for clearing mail that has arrived).
+    local seen = {}
+    for _, link in ipairs(bagLinks) do seen[link] = true end
+    if Roster.bankOpen then for _, link in ipairs(bank) do seen[link] = true end end
+    if Roster.mailOpen and Roster.inboxLoaded then for _, link in ipairs(inbox) do seen[link] = true end end
+    return items, bank, inbox, seen, inboxComplete
+end
+
+-- Mail sent to this character from another of yours: drop entries that have
+-- arrived (seen in the inbox, bags, bank or worn). When the whole inbox was
+-- read, also drop ones past the delivery delay that aren't there any more
+-- (taken and sold, returned or deleted).
+local MAIL_DELAY = 3600
+-- Links carry the level of whoever made them, so match on item ID,
+-- enchant, gems and random suffix only.
+local function ItemKey(link)
+    local str = type(link) == "string" and string_match(link, "item:([%-%d:]+)")
+    if not str then return link end
+    local parts, n = {}, 0
+    for f in string.gmatch(str .. ":", "([^:]*):") do
+        n = n + 1
+        if n > 7 then break end
+        parts[n] = (f == "" and "0") or f
+    end
+    return table.concat(parts, ":")
+end
+
+local function ClearArrivedMail(key, seen, gear, inboxComplete)
+    local list = DB.mailed[key]
+    if not list then return end
+    local have = {}
+    for link in pairs(seen) do have[ItemKey(link)] = true end
+    for _, link in pairs(gear) do have[ItemKey(link)] = true end
+    local now = time()
+    for i = #list, 1, -1 do
+        local m = list[i]
+        if have[ItemKey(m.link)] or (inboxComplete and now - (m.sent or 0) >= MAIL_DELAY) then table.remove(list, i) end
+    end
+    if #list == 0 then DB.mailed[key] = nil end
 end
 
 local function TakeSnapshot()
@@ -271,6 +605,7 @@ local function TakeSnapshot()
     if type(weights) ~= "table" or not next(weights) or not spec then return false end
 
     local key = PlayerKey()
+    local coreKey = (MSC.GetPlayerKey and MSC:GetPlayerKey()) or key   -- core TalentProfiles/GearProfiles
     local state = {}
     local gear = {}
     for _, s in ipairs(GEAR_SLOTS) do gear[s] = GetInventoryItemLink("player", s) end
@@ -280,14 +615,18 @@ local function TakeSnapshot()
     if MSC.CurrentClass.ValidWeapons then
         for k, v in pairs(MSC.CurrentClass.ValidWeapons) do if v then valid[k] = true end end
     end
+    local statsOnly = {}
+    if MSC.CurrentClass.StatsOnlyWeapons then
+        for k, v in pairs(MSC.CurrentClass.StatsOnlyWeapons) do if v then statsOnly[k] = true end end
+    end
     local prev = DB.chars[key]
     local self = { class = cls, level = UnitLevel("player"), validWeapons = valid }
-    local stashItems, bankLinks, inboxLinks = CollectStash(self, prev, state)
-    -- The mailbox has been read: it now covers anything sent to this character.
-    if Roster.mailOpen then DB.mailed[key] = nil end
+    local canDW = CanDualWieldNow()
+    local stashItems, bankLinks, inboxLinks, seen, inboxComplete = CollectStash(self, prev, state)
+    ClearArrivedMail(key, seen, gear, inboxComplete)
 
     local specs = {}
-    specs[spec] = SnapshotSpec(weights, spec, gear, state, stashItems)
+    specs[spec] = SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
 
     -- Tracked specs (the core's multi-spec), with the talents and gear set
     -- saved for each, the same way the core's tooltip scores them.
@@ -297,12 +636,12 @@ local function TakeSnapshot()
             if on and tSpec ~= spec and not specs[tSpec] then
                 local origTalents = MSC.TalentCache
                 local tp = SGJ_Settings.TalentProfiles
-                if tp and tp[key] and tp[key][tSpec] then MSC.TalentCache = tp[key][tSpec] end
+                if tp and tp[coreKey] and tp[coreKey][tSpec] then MSC.TalentCache = tp[coreKey][tSpec] end
                 local ok, tWeights = pcall(MSC.GetWeightsByName, tSpec)
                 if ok and type(tWeights) == "table" and next(tWeights) then
                     local gp = SGJ_Settings.GearProfiles
-                    local tGear = gp and gp[key] and gp[key][tSpec]
-                    specs[tSpec] = SnapshotSpec(tWeights, tSpec, tGear or gear, state, stashItems)
+                    local tGear = gp and gp[coreKey] and gp[coreKey][tSpec]
+                    specs[tSpec] = SnapshotSpec(tWeights, tSpec, tGear or gear, state, stashItems, canDW)
                 end
                 MSC.TalentCache = origTalents
             end
@@ -311,14 +650,18 @@ local function TakeSnapshot()
 
     DB.chars[key] = {
         key = key,
-        name = UnitName("player"),
+        name = (MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player"),
         realm = GetRealmName(),
         faction = UnitFactionGroup("player"),
         class = cls,
         race = UnitRace("player"),
+        raceToken = select(2, UnitRace("player")),
+        ap = (MSC.CtxAttackPower and MSC.CtxAttackPower()) or nil,
+        statsOnly = statsOnly,
         level = UnitLevel("player"),
         updated = time(),
-        canDW = CanDualWieldNow(),
+        canDW = canDW,
+        scoring = ScoringOptions(),
         validWeapons = valid,
         active = spec,
         specs = specs,
@@ -357,27 +700,47 @@ end
 -- 4. CAN THE ALT USE IT?
 -- =========================================================================
 local scanTip
-local restrictionCache = {}
+local scanCache = {}  -- itemID -> { classes = "Classes: ..." or false, unique = bool }
 
--- The "Classes: ..." line of an item, or false when it has none.
-local function ClassRestriction(link)
+-- What the item's tooltip says that the item API doesn't: its "Classes: ..."
+-- line and whether it's unique(-equipped). nil when it can't be read yet.
+local function ScanItem(link)
     local id = GetItemInfoInstant(link)
-    if not id then return false end
-    if restrictionCache[id] ~= nil then return restrictionCache[id] end
-    if not ITEM_CLASSES_ALLOWED then return false end
+    if not id then return nil end
+    if scanCache[id] then return scanCache[id] end
     scanTip = scanTip or CreateFrame("GameTooltip", "SGJ_RosterScanTip", nil, "GameTooltipTemplate")
     scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
     scanTip:ClearLines()
-    if not pcall(scanTip.SetHyperlink, scanTip, link) then return false end
-    local prefix = ITEM_CLASSES_ALLOWED:gsub("%%s", "")
-    local result = false
-    for i = 2, scanTip:NumLines() do
+    if not pcall(scanTip.SetHyperlink, scanTip, link) then return nil end
+    local n = scanTip:NumLines() or 0
+    -- An empty scan (item data not loaded) proves nothing: don't remember it.
+    if n <= 1 then Roster.missing = true; return nil end
+    local prefix = ITEM_CLASSES_ALLOWED and ITEM_CLASSES_ALLOWED:gsub("%%s", "")
+    local res = { classes = false, unique = false }
+    for i = 2, n do
         local fs = _G["SGJ_RosterScanTipTextLeft" .. i]
         local text = fs and fs:GetText()
-        if type(text) == "string" and string_find(text, prefix, 1, true) then result = text; break end
+        -- Forever can hand back protected ("secret") text that errors when compared.
+        if type(text) == "string" and not (MSC_IsSecret and MSC_IsSecret(text)) then
+            if prefix and not res.classes and string_find(text, prefix, 1, true) then res.classes = text end
+            if (ITEM_UNIQUE and text == ITEM_UNIQUE) or (ITEM_UNIQUE_EQUIPPABLE and text == ITEM_UNIQUE_EQUIPPABLE) then
+                res.unique = true
+            end
+        end
     end
-    restrictionCache[id] = result
-    return result
+    scanCache[id] = res
+    return res
+end
+
+-- The "Classes: ..." line of an item, or false when it has none.
+local function ClassRestriction(link)
+    local r = ScanItem(link)
+    return (r and r.classes) or false
+end
+
+local function IsUniqueItem(link)
+    local r = ScanItem(link)
+    return (r and r.unique) or false
 end
 
 -- Same armour rules as the core's MSC.IsItemUsable, at the level the alt
@@ -388,8 +751,6 @@ local function MaxArmor(class, level)
     if class == "ROGUE" or class == "DRUID" then return 2 end
     return 1
 end
-
-local RELIC_CLASS = { [7] = "PALADIN", [8] = "DRUID", [9] = "SHAMAN" }
 
 function AltCanUse(alt, link, info)
     if info.classID == 2 then
@@ -437,14 +798,22 @@ local function MailedFor(alt, spec, sd)
             table.remove(list, i)  -- returned or deleted by now
         else
             local info = ItemInfo(m.link)
-            local cands = info and CandidateSlots(info.equipLoc)
+            if not info then Roster.missing = true end
+            local cands = info and not RelicBlocked(alt, m.link) and CandidateSlots(info.equipLoc, alt.canDW)
             if cands and AltCanUse(alt, m.link, info) then
-                -- Rescore when the alt's snapshot (and so its weights) changed.
-                if m.scoredFor ~= alt.updated then m.scores, m.scoredFor = {}, alt.updated end
+                -- Rescore when the alt's snapshot (weights, scoring options) changed.
+                local scoredFor = tostring(alt.updated) .. "|" .. ScoringSig(alt)
+                if m.scoredFor ~= scoredFor then m.scores, m.scoredFor = {}, scoredFor end
                 local sc = m.scores[spec]
                 if not sc then
                     sc = {}
-                    for _, slotId in ipairs(cands) do sc[slotId] = ScoreItem(m.link, slotId, sd.weights, spec) or 0 end
+                    local twoHand = TWO_HAND[info.equipLoc]
+                    for _, slotId in ipairs(cands) do
+                        local other = (not twoHand) and OtherHandLink(sd.slots, slotId) or nil
+                        local v = FullScore(m.link, slotId, sd.weights, spec, alt, sd, other)
+                        if not v then Roster.missing = true end
+                        sc[slotId] = v or 0
+                    end
                     m.scores[spec] = sc
                 end
                 out = out or {}
@@ -466,7 +835,15 @@ local function OwnedFor(alt, spec, sd)
     return out
 end
 
-local WHERE_TEXT = { bags = "bags", bank = "bank", mail = "mail" }
+-- Where a stashed item is (literal keys so the locale audit finds them).
+local function WhereText(where)
+    if where == "bank" then return L["bank"] elseif where == "mail" then return L["mail"] end
+    return L["bags"]
+end
+local function HasBetterText(where)
+    if where == "bank" then return L["has better (bank)"] elseif where == "mail" then return L["has better (mail)"] end
+    return L["has better (bags)"]
+end
 
 local function SpecDelta(alt, spec, sd, link, equipLoc, reqLevel)
     local w, slots, stash = sd.weights, sd.slots, OwnedFor(alt, spec, sd)
@@ -487,56 +864,97 @@ local function SpecDelta(alt, spec, sd, link, equipLoc, reqLevel)
         return best, bestIt
     end
 
-    local best, bestSlot, eqBest, bar
-    local function Try(slotId, newScore, owned, equipped, stashIt)
+    local best, bestSlot, eqBest, bar, setGain, setBreak
+    -- replaced: the equipped slots the new item takes over (for set bonuses)
+    local function Try(slotId, newScore, owned, equipped, stashIt, replaced)
         if not newScore then return end
+        local sDelta, gained, broken = SetDelta(sd, spec, link, replaced or { slotId })
+        newScore = newScore + sDelta
         local d = newScore - owned
-        if not best or d > best then best, bestSlot, bar = d, slotId, (owned > equipped) and stashIt or nil end
+        if not best or d > best then
+            best, bestSlot, bar = d, slotId, (owned > equipped) and stashIt or nil
+            setGain, setBreak = gained, broken
+        end
         local de = newScore - equipped
         if not eqBest or de > eqBest then eqBest = de end
     end
-    local function Single(slotId, n, twoHand)
+    local function Other(slotId) return OtherHandLink(slots, slotId) end
+    local function Score(slotId, other) return FullScore(link, slotId, w, spec, alt, sd, other) end
+    -- A one-hand swap is only measured against stashed one-handers (a
+    -- stashed two-hander replaces both hands, see the two-hand case).
+    local function Single(slotId, n)
+        local twoHand = nil
+        if slotId == 16 or slotId == 17 then twoHand = false end
         local st, it = Stash(slotId, twoHand)
         Try(slotId, n, math_max(Eq(slotId), st), Eq(slotId), it)
     end
 
     if equipLoc == "INVTYPE_FINGER" or equipLoc == "INVTYPE_TRINKET" then
         local a = (equipLoc == "INVTYPE_FINGER") and 11 or 13
-        local n = ScoreItem(link, a, w, spec)
-        -- The new item replaces the weaker of the best two owned.
-        local owned = { { Eq(a) }, { Eq(a + 1) } }
-        for _, it in ipairs(stash) do
-            local sc = it.scores and it.scores[a]
-            if sc and (it.req or 0) <= cutoff then owned[#owned + 1] = { sc, it } end
+        local n = Score(a)
+        -- Unique and already worn: it can only take the place of that copy.
+        local wornAt
+        local id = GetItemInfoInstant(link)
+        if id and IsUniqueItem(link) then
+            for s = a, a + 1 do
+                if slots[s] and GetItemInfoInstant(slots[s].link) == id then wornAt = s; break end
+            end
         end
-        table_sort(owned, function(x, y) return x[1] > y[1] end)
-        local weakSlot = (Eq(a) <= Eq(a + 1)) and a or a + 1
-        Try(weakSlot, n, owned[2][1], math.min(Eq(a), Eq(a + 1)), owned[2][2])
+        if wornAt then
+            Try(wornAt, n, Eq(wornAt), Eq(wornAt))
+        else
+            -- The new item replaces the weaker of the best two owned.
+            local owned = { { Eq(a) }, { Eq(a + 1) } }
+            for _, it in ipairs(stash) do
+                local sc = it.scores and it.scores[a]
+                if sc and (it.req or 0) <= cutoff then owned[#owned + 1] = { sc, it } end
+            end
+            table_sort(owned, function(x, y) return x[1] > y[1] end)
+            local weakSlot = (Eq(a) <= Eq(a + 1)) and a or a + 1
+            Try(weakSlot, n, owned[2][1], math.min(Eq(a), Eq(a + 1)), owned[2][2])
+        end
     elseif TWO_HAND[equipLoc] then
         if IsShieldTank(alt.class, spec) and not (mh2H and SGJ_Settings and SGJ_Settings.ShieldTankNo2H == false) then
             return nil
         end
-        local equipped = Eq(16) + (mh2H and 0 or Eq(17))
+        -- both hands with their combined weapon bonus (a racial counts once)
+        local equipped = BothHandsScore(slots, sd.pairBonus)
         local st2H, it2H = Stash(16, true)
-        local stMH, itMH = Stash(16, false)
-        local stOH, itOH = Stash(17)
-        local pair = math_max(mh2H and 0 or Eq(16), stMH) + math_max(Eq(17), stOH)
+        -- Best owned main hand + off hand pair; one item can't fill both hands.
+        local mhOpts = { { mh2H and 0 or Eq(16) } }
+        local ohOpts = { { Eq(17) } }
+        for _, it in ipairs(stash) do
+            if (it.req or 0) <= cutoff and not it.twoHand and it.scores then
+                if it.scores[16] then mhOpts[#mhOpts + 1] = { it.scores[16], it } end
+                if it.scores[17] then ohOpts[#ohOpts + 1] = { it.scores[17], it } end
+            end
+        end
+        local pair, pairIt = 0, nil
+        for _, x in ipairs(mhOpts) do
+            for _, y in ipairs(ohOpts) do
+                if not (x[2] and x[2] == y[2]) and x[1] + y[1] > pair then
+                    pair, pairIt = x[1] + y[1], x[2] or y[2]
+                end
+            end
+        end
         local owned = math_max(equipped, st2H, pair)
-        local it = (owned == st2H) and it2H or itMH or itOH
-        Try(16, ScoreItem(link, 16, w, spec), owned, equipped, it)
+        local it = (it2H and owned == st2H) and it2H or pairIt
+        Try(16, Score(16), owned, equipped, it, { 16, 17 })
     elseif equipLoc == "INVTYPE_WEAPON" then
-        Single(16, ScoreItem(link, 16, w, spec))
-        if alt.canDW and not mh2H then Single(17, ScoreItem(link, 17, w, spec)) end
+        Single(16, Score(16, Other(16)))
+        if alt.canDW and not mh2H then Single(17, Score(17, Other(17))) end
     elseif equipLoc == "INVTYPE_WEAPONOFFHAND" or equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE" then
         if mh2H then return nil end
         if equipLoc == "INVTYPE_WEAPONOFFHAND" and not alt.canDW then return nil end
-        Single(17, ScoreItem(link, 17, w, spec))
+        Single(17, Score(17, Other(17)))
     else
         local slotId = MSC.SlotMap and MSC.SlotMap[equipLoc]
         if not slotId or slotId == 4 then return nil end
-        Single(slotId, ScoreItem(link, slotId, w, spec))
+        -- main-hand-only weapons: the other hand matters (a racial counts once)
+        local other = (slotId == 16 or slotId == 17) and Other(slotId) or nil
+        Single(slotId, Score(slotId, other))
     end
-    return best, bestSlot, eqBest, bar
+    return best, bestSlot, eqBest, bar, setGain, setBreak
 end
 
 function ItemInfo(link)
@@ -551,14 +969,17 @@ end
 local function JudgeForAlt(alt, link, info, onlySpec)
     if not AltCanUse(alt, link, info) then return { state = "cant" } end
     local res = { state = "none" }
+    -- Another class's relic on a core that can't score it for them: say nothing.
+    if RelicBlocked(alt, link) then return res end
     local stashedBy
     for spec, sd in pairs(alt.specs or {}) do
         if not onlySpec or spec == onlySpec then
-            local d, slotId, eqD, bar = SpecDelta(alt, spec, sd, link, info.equipLoc, info.reqLevel)
+            local d, slotId, eqD, bar, gained, broken = SpecDelta(alt, spec, sd, link, info.equipLoc, info.reqLevel)
             if slotId then res.slot = res.slot or slotId end
             if eqD and eqD > 0.05 and (not d or d <= 0.05) and bar then stashedBy = stashedBy or bar end
             if d and d > 0.05 and (not res.delta or d > res.delta) then
                 res.state, res.delta, res.slot, res.spec = "up", d, slotId, spec
+                res.setGain, res.setBreak = gained, broken
                 res.pct = (sd.total or 0) > 0 and (d / sd.total * 100) or nil
             end
         end
@@ -575,6 +996,13 @@ local function TierText(res)
     elseif res.pct >= MID_PCT then color, label = "|cffffd100", L["mid"]
     else color, label = "|cffaaaaaa", L["small"] end
     return string_format("%s+%.0f%% %s|r", color, res.pct, label)
+end
+
+-- "(completes 3-pc set)" / "(breaks 2-pc set)" after an upgrade.
+local function SetNote(res)
+    if res.setGain then return " |cff00ff00" .. string_format(L["(completes %d-pc set)"], res.setGain) .. "|r" end
+    if res.setBreak then return " |cffff5555" .. string_format(L["(breaks %d-pc set)"], res.setBreak) .. "|r" end
+    return ""
 end
 
 local function WhenText(res)
@@ -599,6 +1027,8 @@ local function UpgradesFor(link)
     if not info then return nil end
     local me = PlayerKey()
     local list = {}
+    -- Set when some alt-side item data wasn't loaded yet: don't cache then.
+    Roster.missing = false
     for key, alt in pairs(DB.chars) do
         if key ~= me and InScope(alt) and not DB.tooltipOff[key] and (DB.settings.ShowFuture or (info.reqLevel or 0) <= (alt.level or 0)) then
             local res = JudgeForAlt(alt, link, info)
@@ -609,6 +1039,7 @@ local function UpgradesFor(link)
         end
     end
     table_sort(list, function(a, b) return SortKey(a) > SortKey(b) end)
+    if Roster.missing then return list end
 
     if Roster.cacheSize > 400 then wipe(Roster.cache); Roster.cacheSize = 0 end
     Roster.cache[link] = { mscRev = mscRev, list = list }
@@ -632,13 +1063,18 @@ local function IsBound(tooltip, info)
     for i = 2, math.min(tooltip:NumLines(), 8) do
         local fs = _G[name .. "TextLeft" .. i]
         local text = fs and fs:GetText()
-        if type(text) == "string" and (text == ITEM_SOULBOUND or text == ITEM_BIND_ON_PICKUP or text == ITEM_BIND_QUEST) then
+        -- Forever can hand back protected ("secret") text that errors when compared.
+        if type(text) == "string" and not (MSC_IsSecret and MSC_IsSecret(text))
+            and (text == ITEM_SOULBOUND or text == ITEM_BIND_ON_PICKUP or text == ITEM_BIND_QUEST) then
             return true
         end
     end
     return false
 end
 
+-- Drawn right away (not deferred): some tooltips (crafting results, bag items) are
+-- re-set every frame or so, which wipes lines added a frame late. Ordering under the
+-- Judge's Score comes from registering after the core (see the hooks below).
 local function DrawTooltip(tooltip)
     if Roster.suppressTooltip then
         -- The grid's own hover tooltips: mark them done so a deferred call skips them too.
@@ -652,12 +1088,14 @@ local function DrawTooltip(tooltip)
     if not IsEquippableItem(link) then return end
     local info = ItemInfo(link)
     if not info then return end  -- the core re-sets the tooltip once the item loads
-    -- Let the core's lines go first (it waits a frame for tooltips still being built).
+    -- Tooltips still being built: the core waits a frame too, and its timer was queued first.
     if not tooltip:IsVisible() then
         C_Timer.After(0, function() if tooltip:IsVisible() then DrawTooltip(tooltip) end end)
         return
     end
     tooltip.sgjRosterLink = link
+    -- Gear you're wearing: list better items already waiting for that slot instead.
+    if Roster.DrawOwnWaiting and Roster.DrawOwnWaiting(tooltip, link) then return end
     if DB.settings.BoEOnly and IsBound(tooltip, info) then return end
 
     local list = UpgradesFor(link)
@@ -675,7 +1113,7 @@ local function DrawTooltip(tooltip)
         local left = "  " .. ColoredName(alt) .. " |cff888888(" .. ShortSpec(alt.specs[res.spec] and alt.specs[res.spec].pretty) .. " " .. (alt.level or "?") .. ")|r"
         local days = DaysOld(alt)
         if days >= STALE_DAYS then left = left .. " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
-        tooltip:AddDoubleLine(left, TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
+        tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
     end
     tooltip:Show()
 end
@@ -687,18 +1125,28 @@ local function HookTooltip(tt)
     if tt:HasScript("OnTooltipCleared") then tt:HookScript("OnTooltipCleared", function(self) self.sgjRosterLink = nil end) end
 end
 
-HookTooltip(GameTooltip)
-HookTooltip(ItemRefTooltip)
-if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
-    TooltipDataProcessor.AddTooltipPostCall(TooltipDataProcessor.AllTypes, function(tooltip)
-        if tooltip == GameTooltip or tooltip == ItemRefTooltip then DrawTooltip(tooltip) end
+-- Hooked at PLAYER_LOGIN, like the core's TooltipDataProcessor callback: callbacks run
+-- in registration order, and this frame's PLAYER_LOGIN comes after the core's (Roster
+-- loads after it), so Roster's lines always come after the Judge's Score.
+do
+    local hookFrame = CreateFrame("Frame")
+    hookFrame:RegisterEvent("PLAYER_LOGIN")
+    hookFrame:SetScript("OnEvent", function(self)
+        self:UnregisterEvent("PLAYER_LOGIN")
+        HookTooltip(GameTooltip)
+        HookTooltip(ItemRefTooltip)
+        if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
+            TooltipDataProcessor.AddTooltipPostCall(TooltipDataProcessor.AllTypes, function(tooltip)
+                if tooltip == GameTooltip or tooltip == ItemRefTooltip then DrawTooltip(tooltip) end
+            end)
+        end
     end)
 end
 
 -- =========================================================================
 -- 7. GRID PAGE (tab in the Gear Judge window)
 -- =========================================================================
-local LABEL_W, COL_W, ROW_H, HEAD_H, GRID_TOP = 100, 118, 22, 40, -104
+local LABEL_W, COL_W, ROW_H, HEAD_H, GRID_TOP = 100, 140, 22, 40, -116
 local page, cols, rowFrames, firstCol, checkLink = nil, {}, {}, 1, nil
 local extraRows = { "TOTAL", "CHECK", "UPDATED" }
 
@@ -732,7 +1180,11 @@ StaticPopupDialogs["SGJ_ROSTER_DELETE"] = {
     text = L["Remove %s from the Roster?"],
     button1 = YES, button2 = NO,
     OnAccept = function(self, data)
-        if DB and data then DB.chars[data] = nil; BumpRevision(); if Roster.RefreshPage then Roster.RefreshPage() end end
+        if DB and data then
+            DB.chars[data], DB.mailed[data], DB.tooltipOff[data] = nil, nil, nil
+            BumpRevision()
+            if Roster.RefreshPage then Roster.RefreshPage() end
+        end
     end,
     timeout = 0, whileDead = 1, hideOnEscape = 1, preferredIndex = 3,
 }
@@ -742,16 +1194,41 @@ local function SetCheckLink(link)
     if Roster.RefreshPage then Roster.RefreshPage() end
 end
 
+-- An item tooltip inside the grid: no Roster lines. The core's Judge's Score stays
+-- (handy: how would this alt's item do on the character you're on?).
+local function ShowGridItemTooltip(link)
+    Roster.suppressTooltip = true
+    pcall(GameTooltip.SetHyperlink, GameTooltip, link)
+    Roster.suppressTooltip = false
+end
+
+-- True when the core added its Judge's Score block to the tooltip.
+local function HasJudgeScore(tooltip)
+    local label = MSC.L and MSC.L["Judge's Score:"]
+    local name = tooltip:GetName()
+    if not (label and name) then return false end
+    for i = 2, tooltip:NumLines() do
+        local fs = _G[name .. "TextLeft" .. i]
+        local text = fs and fs:GetText()
+        if type(text) == "string" and not (MSC_IsSecret and MSC_IsSecret(text)) and string_find(text, label, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 local function CellOnEnter(self)
     if not self.link and not self.stashList then return end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     if self.link then
-        Roster.suppressTooltip = true
-        GameTooltip:SetHyperlink(self.link)
-        Roster.suppressTooltip = false
+        ShowGridItemTooltip(self.link)
         if self.scoreText then
             GameTooltip:AddLine(" ")
             GameTooltip:AddDoubleLine("|cff00ccff" .. string_format(L["Roster score (%s):"], self.specText or "?") .. "|r", self.scoreText, 1, 1, 1, 1, 1, 1)
+        end
+        if HasJudgeScore(GameTooltip) then
+            local me = (MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player")
+            GameTooltip:AddLine("|cff888888" .. string_format(L["Judge's Score above is for %s."], me) .. "|r", 1, 1, 1, true)
         end
     else
         GameTooltip:AddLine(L["Empty slot"], 1, 0.82, 0)
@@ -760,7 +1237,7 @@ local function CellOnEnter(self)
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("|cff00ccff" .. L["Better items waiting:"] .. "|r")
         for _, x in ipairs(self.stashList) do
-            local where = L[WHERE_TEXT[x.it.where] or "bags"]
+            local where = WhereText(x.it.where)
             local lvl = (x.it.req or 0) > (self.altLevel or 0) and (" |cffff8800" .. string_format(L["at %d"], x.it.req) .. "|r") or ""
             GameTooltip:AddDoubleLine("  " .. x.it.link .. " |cff888888(" .. where .. ")|r", string_format("%.1f", x.score) .. lvl, 1, 1, 1, 1, 1, 1)
         end
@@ -781,6 +1258,33 @@ local function StashFor(owned, slotId, equippedScore)
     end
     if list then table_sort(list, function(a, b) return a.score > b.score end) end
     return list
+end
+
+-- Hovering gear the logged-in character is wearing: better items already waiting
+-- for that slot (mail on the way or in the inbox, bags, bank), best first, with
+-- how much each adds. Returns true for worn items (they never get alt lines).
+function Roster.DrawOwnWaiting(tooltip, link)
+    local slotId
+    for _, s in ipairs(GEAR_SLOTS) do
+        if GetInventoryItemLink("player", s) == link then slotId = s; break end
+    end
+    if not slotId then return false end
+    local me = DB.chars[PlayerKey()]
+    local sd = me and me.specs and me.specs[me.active]
+    local e = sd and sd.slots and sd.slots[slotId]
+    if not e then return true end
+    local list = StashFor(OwnedFor(me, me.active, sd), slotId, e.score)
+    if not list then return true end
+    tooltip:AddLine(" ")
+    tooltip:AddLine("|cff00ccff" .. L["Better items waiting:"] .. "|r")
+    for i, x in ipairs(list) do
+        if i > 3 then break end
+        local lvl = (x.it.req or 0) > (me.level or 0) and (" |cffff8800" .. string_format(L["at %d"], x.it.req) .. "|r") or ""
+        tooltip:AddDoubleLine("  " .. x.it.link .. " |cff888888(" .. WhereText(x.it.where) .. ")|r",
+            "|cff00ff00+" .. string_format("%.1f", x.score - e.score) .. "|r" .. lvl, 1, 1, 1, 1, 1, 1)
+    end
+    tooltip:Show()
+    return true
 end
 
 local function CreateColumn(parent, index)
@@ -941,7 +1445,7 @@ local function FillColumn(col, entry, judge)
     elseif judge.state == "none" then
         check.text:SetText("|cffaaaaaa" .. L["no upgrade"] .. "|r")
     elseif judge.state == "stashed" then
-        local where = L["has better (" .. (WHERE_TEXT[judge.stash and judge.stash.where] or "bags") .. ")"]
+        local where = HasBetterText(judge.stash and judge.stash.where)
         check.text:SetText("|cff00ccff" .. where .. "|r")
         check.link = judge.stash and judge.stash.link
     else
@@ -1012,7 +1516,7 @@ local function BuildPage(parent)
 
     local sub = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
-    sub:SetWidth(420); sub:SetJustifyH("LEFT"); sub:SetTextColor(0.7, 0.7, 0.7)
+    sub:SetWidth(470); sub:SetJustifyH("LEFT"); sub:SetTextColor(0.7, 0.7, 0.7)
     sub:SetText(L["Every character's gear, scored for its own spec. Log in on each alt once to add it."])
 
     -- Item check slot (top right)
@@ -1033,9 +1537,7 @@ local function BuildPage(parent)
     check:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         if checkLink then
-            Roster.suppressTooltip = true
-            GameTooltip:SetHyperlink(checkLink)
-            Roster.suppressTooltip = false
+            ShowGridItemTooltip(checkLink)
             GameTooltip:AddLine(L["Right-click to clear."], 0.5, 0.5, 0.5)
         else
             GameTooltip:SetText(L["Check an item"])
@@ -1047,20 +1549,23 @@ local function BuildPage(parent)
 
     page.checkName = page:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     page.checkName:SetPoint("RIGHT", check, "LEFT", -8, 0)
-    page.checkName:SetJustifyH("RIGHT"); page.checkName:SetWidth(260); page.checkName:SetWordWrap(false)
+    page.checkName:SetJustifyH("RIGHT"); page.checkName:SetWidth(240); page.checkName:SetWordWrap(false)
 
-    -- Options row
-    local optAnchor = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    optAnchor:SetPoint("TOPLEFT", 16, -64)
-    optAnchor:SetText("")
-    local _, l1 = Checkbox(page, L["Tooltip lines"], "ShowTooltip", optAnchor, -4)
+    -- Options, on two rows so translated labels fit: tooltip options, then scope
+    local row1 = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row1:SetPoint("TOPLEFT", 16, -74)
+    row1:SetText("")
+    local row2 = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row2:SetPoint("TOPLEFT", 16, -96)
+    row2:SetText("")
+    local _, l1 = Checkbox(page, L["Tooltip lines"], "ShowTooltip", row1, -4)
     local _, l2 = Checkbox(page, L["Tradeable (BoE) items only"], "BoEOnly", l1)
-    local _, l3 = Checkbox(page, L["This realm and faction only"], "SameRealm", l2)
-    local _, l4 = Checkbox(page, L["Include higher-level items"], "ShowFuture", l3)
+    local _, l3 = Checkbox(page, L["This realm and faction only"], "SameRealm", row2, -4)
+    Checkbox(page, L["Include higher-level items"], "ShowFuture", l3)
 
     local topN = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
-    topN:SetSize(110, 20)
-    topN:SetPoint("LEFT", l4, "RIGHT", 12, 0)
+    topN:SetSize(130, 20)
+    topN:SetPoint("LEFT", l2, "RIGHT", 16, 0)
     local function TopNText() topN:SetText(string_format(L["Tooltip: top %d"], DB.settings.MaxLines or DEFAULTS.MaxLines)) end
     topN:SetScript("OnShow", TopNText)
     topN:SetScript("OnClick", function()
@@ -1226,6 +1731,13 @@ ev:SetScript("OnEvent", function(self, event, arg1)
         if type(SGJ_RosterDB) ~= "table" then SGJ_RosterDB = {} end
         DB = SGJ_RosterDB
         if type(DB.chars) ~= "table" then DB.chars = {} end
+        -- Entries from before GUID keys ("Name-Realm") are dropped: on WoW Forever several
+        -- characters shared one first-name key. Each character is re-added at its next login.
+        for _, t in ipairs({ DB.chars, type(DB.mailed) == "table" and DB.mailed or {}, type(DB.tooltipOff) == "table" and DB.tooltipOff or {} }) do
+            for k in pairs(t) do
+                if type(k) ~= "string" or not k:find("^Player%-") then t[k] = nil end
+            end
+        end
         if type(DB.settings) ~= "table" then DB.settings = {} end
         if type(DB.tooltipOff) ~= "table" then DB.tooltipOff = {} end
         if type(DB.mailed) ~= "table" then DB.mailed = {} end
@@ -1250,13 +1762,16 @@ ev:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "MAIL_FAILED" then
         pendingMail = nil
     elseif event == "MAIL_SHOW" then
-        Roster.mailOpen = true
+        Roster.mailOpen, Roster.inboxLoaded = true, false
     elseif event == "MAIL_INBOX_UPDATE" then
-        if Roster.mailOpen then RequestSnapshot(1) end
+        if Roster.mailOpen then
+            Roster.inboxLoaded = true
+            RequestSnapshot(1)
+        end
     elseif event == "MAIL_CLOSED" then
         -- Same as the bank: one last read while the inbox is still loaded.
         if Roster.mailOpen and not InCombatLockdown() then pcall(TakeSnapshot) end
-        Roster.mailOpen = false
+        Roster.mailOpen, Roster.inboxLoaded = false, false
     elseif event == "BANKFRAME_OPENED" then
         Roster.bankOpen = true
         RequestSnapshot(1)

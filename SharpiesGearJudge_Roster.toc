@@ -6,4 +6,12 @@
 ## Dependencies: SharpiesGearJudge
 ## SavedVariables: SGJ_RosterDB
 
+Locales\deDE.lua
+Locales\esES.lua
+Locales\esMX.lua
+Locales\frFR.lua
+Locales\ptBR.lua
+Locales\ruRU.lua
+Locales\koKR.lua
+Locales\zhTW.lua
 Roster.lua

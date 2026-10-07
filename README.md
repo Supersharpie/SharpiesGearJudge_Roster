@@ -9,12 +9,17 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 - Each line shows the alt's spec and level, the size of the upgrade (**BIG**, **mid** or **small**, as a percent of that alt's total gear score), and whether they can use it **now** or only **at level X**.
 - Each alt's own spec, talents and level are taken into account: the item is scored with the same Gear Judge weights that alt uses on their own tooltips. Multi-spec (tracked specs) is included, and the best spec is shown.
 - Soulbound and bind-on-pickup items are skipped by default, since they can't be sent to an alt.
+- Set bonuses count: a line says when an item **completes** a set bonus for that alt, and an item that would **break** one isn't shown as an upgrade unless it's still better overall.
+- Relics (librams, idols, totems) are scored with the alt's own class data, and a second copy of a unique ring or trinket the alt already wears doesn't count as an upgrade.
+- Class and racial weapon bonuses count too (Sword Specialization, Weaponmaster, Hack and Slash and so on), using that alt's own race, talents and level. This needs Sharpie's Gear Judge 3.2.1 or newer.
 - Only the **top 3** alts are listed by default (change it on the Roster tab), and any alt can be left off tooltips with the checkbox on its column.
 
 ### 🎒 Bags, Bank and Mail Count Too
 - Gear an alt is holding for later counts as theirs. If they'll already have something better by the time they can wear the new item, it isn't shown as an upgrade.
 - The bank is saved each time that character visits it, and the mailbox each time they open it.
 - Items you mail to one of your own characters count for them straight away, before they log in. (Mail older than 30 days is dropped, since it will have been returned.)
+
+- Hover gear you're wearing to see better items already waiting for that slot in your mail, bags or bank, and how much each adds.
 
 ### 📊 The Roster Grid
 - A new **Roster** tab in the Gear Judge window: one column per character, one row per slot, with each item's icon and score.
@@ -33,4 +38,3 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 
 ## 📝 Notes
 - A snapshot is only as fresh as that character's last login. Characters not seen for a week are marked.
-- Class weapon bonuses (such as racial weapon skills) and set bonuses aren't counted for alts.
