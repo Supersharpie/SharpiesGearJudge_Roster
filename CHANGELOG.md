@@ -1,5 +1,17 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.1
+
+### ⚔️ PvP
+- **Gear for PvP**: Turning Gear for PvP on or off updates this character's Roster entry right away. Your other characters pick it up the next time you log into them.
+
+### 🔀 Dual Specialization
+- **Both Specs Per Character**: WoW Forever unlocks a second spec at level 40. Roster now saves both specs of each character: the one you're in, and the other scored with its own talents, profile, Talents build and Gear for PvP setting against the gear you last wore in it. Tooltips can say "upgrade for <alt> (Secondary: Protection)", and clicking a character's name in the grid switches between its specs.
+- Characters update when you log into them; a spec switch is saved a few seconds later, once a gear-set swap has finished.
+- Nothing changes for characters with one spec. Dual Specialization can't be reached in the beta yet (level cap 30), so this has only been tested with simulated specs.
+
+---
+
 ## 🚀 v1.0.0
 
 ### 🎉 First Release

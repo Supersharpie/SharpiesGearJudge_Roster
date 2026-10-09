@@ -2,7 +2,7 @@
 ## Title: Sharpie's Gear Judge - Roster (Alt Upgrades) (Forever Edition)
 ## Notes: Shows which of your alts an item upgrades, and a grid of every character's gear scores.
 ## Author: Supersharpie
-## Version: 1.0.0-Forever
+## Version: 1.0.1-Forever
 ## Dependencies: SharpiesGearJudge
 ## SavedVariables: SGJ_RosterDB
 

@@ -90,6 +90,14 @@ local function ShortSpec(pretty)
     return string_match(pretty, "^([^:]+):") or pretty
 end
 
+-- A saved spec's short label: "Protection", or with Dual Specialization
+-- "Secondary: Protection" (groupName is set only for two-spec characters).
+local function SpecLabel(sd)
+    local short = ShortSpec(sd and sd.pretty)
+    if sd and sd.groupName then return sd.groupName .. ": " .. short end
+    return short
+end
+
 local function ClassColor(class)
     local c = (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[class]) or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[class])
     if c then return c.colorStr or string_format("ff%02x%02x%02x", math_floor(c.r * 255), math_floor(c.g * 255), math_floor(c.b * 255)) end
@@ -648,6 +656,24 @@ local function TakeSnapshot()
         end
     end
 
+    -- Dual Specialization: the spec you're not in, scored with its own talents,
+    -- profile, Talents build and Gear for PvP, against the gear last worn in it.
+    -- Its key gets "@<group>" (both specs can use the same profile); sd.spec is
+    -- the real profile key used for scoring.
+    if MSC.HasDualSpec and MSC.HasDualSpec() and MSC.WithSpecGroup and MSC.GetWeightsForGroup then
+        local active = MSC.GetActiveSpecGroup()
+        local other = (active == 1) and 2 or 1
+        specs[spec].group, specs[spec].groupName = active, MSC.SpecGroupName(active)
+        MSC.WithSpecGroup(other, function()
+            local oWeights, oSpec = MSC:GetWeightsForGroup(other)
+            if type(oWeights) ~= "table" or not next(oWeights) or not oSpec then return end
+            local oGear = MSC.GetSpecGear and MSC.GetSpecGear(other)
+            local entry = SnapshotSpec(oWeights, oSpec, oGear or gear, state, stashItems, canDW)
+            entry.spec, entry.group, entry.groupName = oSpec, other, MSC.SpecGroupName(other)
+            specs[oSpec .. "@" .. other] = entry
+        end)
+    end
+
     DB.chars[key] = {
         key = key,
         name = (MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player"),
@@ -694,6 +720,11 @@ local function RequestSnapshot(delay)
         end
         if Roster.RefreshPage then Roster.RefreshPage() end
     end)
+end
+-- Gear for PvP changes this character's weights: snapshot again. (Other
+-- characters keep the weights from their last login until they log in.)
+if MSC and MSC.PvPToggleListeners then
+    table.insert(MSC.PvPToggleListeners, function() RequestSnapshot(1) end)
 end
 
 -- =========================================================================
@@ -810,7 +841,7 @@ local function MailedFor(alt, spec, sd)
                     local twoHand = TWO_HAND[info.equipLoc]
                     for _, slotId in ipairs(cands) do
                         local other = (not twoHand) and OtherHandLink(sd.slots, slotId) or nil
-                        local v = FullScore(m.link, slotId, sd.weights, spec, alt, sd, other)
+                        local v = FullScore(m.link, slotId, sd.weights, sd.spec or spec, alt, sd, other)
                         if not v then Roster.missing = true end
                         sc[slotId] = v or 0
                     end
@@ -847,6 +878,7 @@ end
 
 local function SpecDelta(alt, spec, sd, link, equipLoc, reqLevel)
     local w, slots, stash = sd.weights, sd.slots, OwnedFor(alt, spec, sd)
+    spec = sd.spec or spec -- the other spec's entry key carries "@<group>"
     local cutoff = math_max(alt.level or 0, reqLevel or 0)
     local function Eq(s) local e = slots[s]; return e and e.score or 0 end
     local mh2H = slots[16] and slots[16].twoHand
@@ -1110,7 +1142,7 @@ local function DrawTooltip(tooltip)
             break
         end
         local alt = res.alt
-        local left = "  " .. ColoredName(alt) .. " |cff888888(" .. ShortSpec(alt.specs[res.spec] and alt.specs[res.spec].pretty) .. " " .. (alt.level or "?") .. ")|r"
+        local left = "  " .. ColoredName(alt) .. " |cff888888(" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. ")|r"
         local days = DaysOld(alt)
         if days >= STALE_DAYS then left = left .. " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
         tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
@@ -1322,7 +1354,7 @@ local function CreateColumn(parent, index)
             local sd = alt.specs[k]
             local mark = (k == cur) and "|cff00ff00> |r" or "   "
             local tag = (k == alt.active) and (" |cff888888" .. L["(active)"] .. "|r") or ""
-            GameTooltip:AddLine(mark .. (sd.pretty or k) .. tag, 0.8, 0.8, 0.8)
+            GameTooltip:AddLine(mark .. (sd.groupName and (sd.groupName .. ": ") or "") .. (sd.pretty or k) .. tag, 0.8, 0.8, 0.8)
         end
         if #SpecKeys(alt) > 1 then GameTooltip:AddLine(L["Click to switch spec."], 0.5, 0.5, 0.5) end
         GameTooltip:AddLine(string_format(L["Updated %s"], date("%Y-%m-%d %H:%M", alt.updated or 0)), 0.5, 0.5, 0.5)
@@ -1391,7 +1423,7 @@ local function FillColumn(col, entry, judge)
     local spec = ShownSpec(alt)
     local sd = alt.specs and alt.specs[spec]
     local nSpecs = #SpecKeys(alt)
-    head.sub:SetText(string_format(L["Lv %d"], alt.level or 0) .. "  " .. ShortSpec(sd and sd.pretty) .. (nSpecs > 1 and " |cff00ccff*|r" or ""))
+    head.sub:SetText(string_format(L["Lv %d"], alt.level or 0) .. "  " .. SpecLabel(sd) .. (nSpecs > 1 and " |cff00ccff*|r" or ""))
     head.del:SetShown(not entry.me)
     head.tip:SetShown(not entry.me)
     head.tip:SetChecked(not DB.tooltipOff[entry.key])
@@ -1418,7 +1450,7 @@ local function FillColumn(col, entry, judge)
             local weak = avg > 0 and e.score < avg * 0.5
             cell.text:SetText((weak and "|cffff9933" or "|cffffffff") .. string_format("%.1f", e.score) .. "|r" .. mark)
             cell.scoreText = string_format("%.1f", e.score)
-            cell.specText = ShortSpec(sd and sd.pretty)
+            cell.specText = SpecLabel(sd)
         elseif slotId == 17 and slots[16] and slots[16].twoHand then
             cell.icon:Hide()
             cell.text:SetText("|cff666666" .. L["(two-hander)"] .. "|r")
@@ -1782,6 +1814,9 @@ ev:SetScript("OnEvent", function(self, event, arg1)
         Roster.bankOpen = false
     elseif event == "BAG_UPDATE_DELAYED" or event == "PLAYERBANKSLOTS_CHANGED" then
         RequestSnapshot(3)
+    elseif event == "ACTIVE_TALENT_GROUP_CHANGED" then
+        -- After a gear-set swap and the core saving the new spec's gear (about 5 s).
+        RequestSnapshot(7)
     else
         RequestSnapshot(3)
     end
