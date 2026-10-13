@@ -28,6 +28,11 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 - A blue **+** on a cell means a better item for that slot is waiting in that character's bags, bank or mail (hover to see it).
 - Click a character's name to switch between their saved specs. Remove old characters with the **x**.
 
+### 🔎 BoE Finder
+- The **BoE Finder** button on the Roster tab lists every tradeable item your characters are holding (bags, bank and mailbox) that upgrades another of your characters, biggest upgrade first, with who holds it and who to send it to.
+- Only characters on the holder's realm and faction are suggested (they're the ones you can mail it to), and items already soulbound are skipped.
+- Hover a row for every character it upgrades; shift-click to link the item.
+
 ## ⚙️ How It Works
 - Each character saves a snapshot when they log in, level up, change talents or change gear. **Log in on each alt once** after installing to add them.
 - Items are saved and scored by their full item link, so random-suffix items ("of the Bear" vs "of the Tiger") are always scored correctly.

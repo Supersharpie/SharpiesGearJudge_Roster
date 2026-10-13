@@ -56,6 +56,7 @@ local RELIC_CLASS = { [7] = "PALADIN", [8] = "DRUID", [9] = "SHAMAN" }
 local SCORING_KEYS = { "EnchantMode", "GemMode", "GemQuality", "AssumeCampingBuffs" }
 
 local Roster = { rev = 0, cache = {}, cacheSize = 0 }
+local scanTip  -- hidden tooltip for text the item API doesn't give (sections 3 and 4)
 
 -- =========================================================================
 -- 1. SMALL HELPERS
@@ -505,7 +506,43 @@ local function BankBagIds()
     return ClassicBankIds()
 end
 
-local function BagLinks(ids, state)
+-- Whether the item in a bag slot is already bound to this character.
+local GetSlotInfo = (C_Container and C_Container.GetContainerItemInfo) or GetContainerItemInfo
+local function SlotIsBound(bag, slot)
+    if GetSlotInfo then
+        local ok, a, _, _, _, _, _, _, _, _, _, bound = pcall(GetSlotInfo, bag, slot)
+        if ok then
+            if type(a) == "table" then return a.isBound and true or false end
+            if bound ~= nil then return bound and true or false end
+        end
+    end
+    -- Old clients: read the slot's tooltip.
+    scanTip = scanTip or CreateFrame("GameTooltip", "SGJ_RosterScanTip", nil, "GameTooltipTemplate")
+    scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
+    scanTip:ClearLines()
+    if not pcall(scanTip.SetBagItem, scanTip, bag, slot) then return true end
+    for i = 2, math.min(scanTip:NumLines() or 0, 8) do
+        local fs = _G["SGJ_RosterScanTipTextLeft" .. i]
+        local text = fs and fs:GetText()
+        if type(text) == "string" and not (MSC_IsSecret and MSC_IsSecret(text))
+            and (text == ITEM_SOULBOUND or text == ITEM_BIND_ON_PICKUP or text == ITEM_BIND_QUEST) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Can this item still be handed to another character? (Bind on Pickup and
+-- quest items never; anything else as long as it isn't bound yet.)
+local function Tradeable(link, bound)
+    if bound then return false end
+    local bindType = select(14, GetItemInfo(link))
+    return bindType ~= 1 and bindType ~= 4
+end
+
+-- Equippable item links in these containers. trade (optional): filled with
+-- the ones that can still be traded.
+local function BagLinks(ids, state, trade)
     local links = {}
     if not (GetNumSlots and GetSlotLink) then return links end
     for _, bag in ipairs(ids) do
@@ -515,6 +552,7 @@ local function BagLinks(ids, state)
             if link and IsEquippableItem(link) then
                 if not GetItemInfo(link) then state.missing = true end
                 links[#links + 1] = link
+                if trade and Tradeable(link, SlotIsBound(bag, slot)) then trade[#trade + 1] = link end
             end
         end
     end
@@ -544,10 +582,19 @@ end
 
 -- Equippable bag, bank and mailbox items this character can use, now or at a
 -- later level. Bank and mailbox lists are kept from the last visit.
-local function CollectStash(self, prev, state)
+-- trade: filled with the tradeable ones (bags, bank, mail) for the BoE Finder.
+local function CollectStash(self, prev, state, trade)
     local bagIds = {}
     for b = 0, (NUM_BAG_SLOTS or 4) do bagIds[#bagIds + 1] = b end
-    local bank = Roster.bankOpen and BagLinks(BankBagIds(), state) or (prev and prev.bankLinks) or {}
+    local prevTrade = prev and prev.trade or {}
+    local bank
+    if Roster.bankOpen then
+        trade.bank = {}
+        bank = BagLinks(BankBagIds(), state, trade.bank)
+    else
+        bank = (prev and prev.bankLinks) or {}
+        trade.bank = prevTrade.bank or {}
+    end
     -- The inbox only counts once it has loaded (MAIL_INBOX_UPDATE).
     local inbox, inboxComplete
     if Roster.mailOpen and Roster.inboxLoaded then
@@ -555,7 +602,14 @@ local function CollectStash(self, prev, state)
     else
         inbox = (prev and prev.inboxLinks) or {}
     end
-    local bagLinks = BagLinks(bagIds, state)
+    -- Mail can't carry soulbound items, so every attachment can still be traded
+    -- unless it binds when picked up.
+    trade.mail = {}
+    for _, link in ipairs(inbox) do
+        if Tradeable(link, false) then trade.mail[#trade.mail + 1] = link end
+    end
+    trade.bags = {}
+    local bagLinks = BagLinks(bagIds, state, trade.bags)
     local items = {}
     local function Add(link, where)
         local info = ItemInfo(link)
@@ -630,7 +684,8 @@ local function TakeSnapshot()
     local prev = DB.chars[key]
     local self = { class = cls, level = UnitLevel("player"), validWeapons = valid }
     local canDW = CanDualWieldNow()
-    local stashItems, bankLinks, inboxLinks, seen, inboxComplete = CollectStash(self, prev, state)
+    local trade = {}
+    local stashItems, bankLinks, inboxLinks, seen, inboxComplete = CollectStash(self, prev, state, trade)
     ClearArrivedMail(key, seen, gear, inboxComplete)
 
     local specs = {}
@@ -693,6 +748,7 @@ local function TakeSnapshot()
         specs = specs,
         bankLinks = bankLinks,
         inboxLinks = inboxLinks,
+        trade = trade,   -- tradeable gear by place (bags, bank, mail), for the BoE Finder
         shown = prev and prev.shown and specs[prev.shown] and prev.shown or nil,
     }
     BumpRevision()
@@ -730,7 +786,6 @@ end
 -- =========================================================================
 -- 4. CAN THE ALT USE IT?
 -- =========================================================================
-local scanTip
 local scanCache = {}  -- itemID -> { classes = "Classes: ..." or false, unique = bool }
 
 -- What the item's tooltip says that the item API doesn't: its "Classes: ..."
@@ -1077,6 +1132,62 @@ local function UpgradesFor(link)
     Roster.cache[link] = { mscRev = mscRev, list = list }
     Roster.cacheSize = Roster.cacheSize + 1
     return list
+end
+
+-- BoE Finder: every tradeable item your characters hold (bags, plus bank and
+-- mail from their last visit) that upgrades another of your characters on the
+-- same realm and faction (who can be mailed it), biggest upgrade first. The
+-- holder itself isn't listed: its own upgrades show as "Better items waiting".
+local FINDER_PLACES = { "bags", "bank", "mail" }
+local finderCache = {}
+local function FinderEntries()
+    local me = PlayerKey()
+    local sig = table.concat({ Roster.rev, MSC.ScoringRevision or 0, tostring(DB.settings.ShowFuture),
+        tostring(DB.settings.SameRealm), me }, "|")
+    if finderCache.sig == sig then return finderCache.list end
+    Roster.missing = false
+    local byKey, out = {}, {}
+    for hKey, holder in pairs(DB.chars) do
+        if holder.trade and (hKey == me or InScope(holder)) then
+            for _, where in ipairs(FINDER_PLACES) do
+                for _, link in ipairs(holder.trade[where] or {}) do
+                    local id = hKey .. "|" .. where .. "|" .. ItemKey(link)
+                    local entry = byKey[id]
+                    if entry then
+                        entry.count = entry.count + 1
+                    else
+                        local info = ItemInfo(link)
+                        if not info then
+                            Roster.missing = true
+                        else
+                            local list = {}
+                            for aKey, alt in pairs(DB.chars) do
+                                if aKey ~= hKey and alt.realm == holder.realm and alt.faction == holder.faction
+                                    and (DB.settings.ShowFuture or (info.reqLevel or 0) <= (alt.level or 0)) then
+                                    local res = JudgeForAlt(alt, link, info)
+                                    if res.state == "up" then res.alt = alt; list[#list + 1] = res end
+                                end
+                            end
+                            if #list > 0 then
+                                table_sort(list, function(a, b) return SortKey(a) > SortKey(b) end)
+                                entry = { link = link, holder = holder, me = (hKey == me), where = where, list = list, count = 1 }
+                                byKey[id] = entry
+                                out[#out + 1] = entry
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table_sort(out, function(a, b)
+        local x, y = SortKey(a.list[1]), SortKey(b.list[1])
+        if x ~= y then return x > y end
+        return a.link < b.link
+    end)
+    -- Some item wasn't loaded yet: don't keep a short list.
+    if not Roster.missing then finderCache.sig, finderCache.list = sig, out end
+    return out
 end
 
 -- =========================================================================
@@ -1491,8 +1602,118 @@ local function FillColumn(col, entry, judge)
     upd.text:SetText((days >= STALE_DAYS and "|cffff5555" or "|cff888888") .. dayText .. "|r")
 end
 
+-- -------------------------------------------------------------------------
+-- BoE Finder view (the Roster tab's second view)
+-- -------------------------------------------------------------------------
+local FINDER_TOP, FINDER_ROW = GRID_TOP - 30, 22
+local FINDER_HOLDER_X, FINDER_BEST_X = 330, 500
+local finderRows, finderOffset = {}, 0
+
+local function UpgradeLine(res)
+    local alt = res.alt
+    local left = "  " .. ColoredName(alt) .. " |cff888888(" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. ")|r"
+    return left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res)
+end
+
+local function FinderRowOnEnter(self)
+    local e = self.entry
+    if not e then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    ShowGridItemTooltip(e.link)
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("|cff00ccff" .. L["Roster upgrades:"] .. "|r")
+    for _, res in ipairs(e.list) do
+        local left, right = UpgradeLine(res)
+        GameTooltip:AddDoubleLine(left, right, 1, 1, 1, 1, 1, 1)
+    end
+    GameTooltip:Show()
+end
+
+local function CreateFinderRow(parent, i)
+    local r = CreateFrame("Button", nil, parent)
+    r:SetPoint("TOPLEFT", 8, FINDER_TOP - (i - 1) * FINDER_ROW)
+    r:SetPoint("RIGHT", parent, "RIGHT", -8, 0)
+    r:SetHeight(FINDER_ROW - 2)
+    local shade = r:CreateTexture(nil, "BACKGROUND", nil, -1); shade:SetAllPoints()
+    shade:SetColorTexture(1, 1, 1, (i % 2 == 0) and 0.03 or 0)
+    local hl = r:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints(); hl:SetColorTexture(1, 0.82, 0, 0.08)
+    r.icon = r:CreateTexture(nil, "ARTWORK"); r.icon:SetSize(18, 18); r.icon:SetPoint("LEFT", 8, 0)
+    local function Text(x, w)
+        local fs = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        fs:SetPoint("LEFT", x, 0); fs:SetWidth(w); fs:SetJustifyH("LEFT"); fs:SetWordWrap(false)
+        return fs
+    end
+    r.item = Text(32, FINDER_HOLDER_X - 48)
+    r.holder = Text(FINDER_HOLDER_X - 8, FINDER_BEST_X - FINDER_HOLDER_X - 10)
+    r.best = Text(FINDER_BEST_X - 8, 240)
+    r.more = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    r.more:SetPoint("RIGHT", -8, 0)
+    r:RegisterForClicks("LeftButtonUp")
+    r:SetScript("OnEnter", FinderRowOnEnter)
+    r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- Shift-click: link the item in chat.
+    r:SetScript("OnClick", function(self)
+        if self.entry and IsModifiedClick("CHATLINK") and ChatEdit_InsertLink then ChatEdit_InsertLink(self.entry.link) end
+    end)
+    return r
+end
+
+local function RefreshFinder()
+    local list = FinderEntries()
+    local visible = math_max(1, math_floor((page:GetHeight() + FINDER_TOP - 40) / FINDER_ROW))
+    if finderOffset > math_max(0, #list - visible) then finderOffset = math_max(0, #list - visible) end
+    local bestW = math_max(160, page:GetWidth() - FINDER_BEST_X - 70)
+    for i = 1, math_max(visible, #finderRows) do
+        local e = list[finderOffset + i]
+        if i <= visible and e then
+            finderRows[i] = finderRows[i] or CreateFinderRow(page.finder, i)
+            local r = finderRows[i]
+            r.entry = e
+            r.icon:SetTexture(select(5, GetItemInfoInstant(e.link)))
+            r.item:SetText(e.link .. ((e.count > 1) and (" |cff888888x" .. e.count .. "|r") or ""))
+            local h = ColoredName(e.holder) .. (e.me and (" |cff888888" .. L["(you)"] .. "|r") or "")
+                .. " |cff888888(" .. WhereText(e.where) .. ")|r"
+            local days = DaysOld(e.holder)
+            if not e.me and days >= STALE_DAYS then h = h .. " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
+            r.holder:SetText(h)
+            local res = e.list[1]
+            r.best:SetWidth(bestW)
+            r.best:SetText(ColoredName(res.alt) .. " |cff888888(" .. SpecLabel(res.alt.specs[res.spec]) .. ")|r "
+                .. TierText(res) .. " " .. WhenText(res))
+            r.more:SetText((#e.list > 1) and string_format(L["+%d more"], #e.list - 1) or "")
+            r:Show()
+        elseif finderRows[i] then
+            finderRows[i].entry = nil
+            finderRows[i]:Hide()
+        end
+    end
+    page.finderPrev:SetEnabled(finderOffset > 0)
+    page.finderNext:SetEnabled(finderOffset + visible < #list)
+    page.finderPageText:SetText((#list > visible) and string_format(L["%d-%d of %d"], finderOffset + 1, math.min(#list, finderOffset + visible), #list) or "")
+    page.finderEmpty:SetShown(#list == 0)
+    return visible
+end
+
+-- Show the grid or the BoE Finder.
+local function ApplyMode()
+    local finder = DB.settings.FinderMode and true or false
+    page.grid:SetShown(not finder)
+    page.check:SetShown(not finder)
+    page.checkName:SetShown(not finder)
+    page.prev:SetShown(not finder)
+    page.next:SetShown(not finder)
+    page.pageText:SetShown(not finder)
+    if finder then page.empty:Hide() end
+    page.finder:SetShown(finder)
+    page.sub:SetText(finder and L["Tradeable gear your characters hold, and who to send it to. Bags update when you log in on a character; bank and mail when you open them."]
+        or L["Every character's gear, scored for its own spec. Log in on each alt once to add it."])
+    page.modeBtn:SetText(finder and L["Gear grid"] or L["BoE Finder"])
+    return finder
+end
+
 local function RefreshPage()
     if not page or not page:IsVisible() or not DB then return end
+    if ApplyMode() then RefreshFinder(); return end
     local list = SortedAlts()
     local visible = math_max(1, math_floor((page:GetWidth() - LABEL_W - 8) / COL_W))
     if firstCol > math_max(1, #list - visible + 1) then firstCol = math_max(1, #list - visible + 1) end
@@ -1550,9 +1771,11 @@ local function BuildPage(parent)
     sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
     sub:SetWidth(470); sub:SetJustifyH("LEFT"); sub:SetTextColor(0.7, 0.7, 0.7)
     sub:SetText(L["Every character's gear, scored for its own spec. Log in on each alt once to add it."])
+    page.sub = sub
 
     -- Item check slot (top right)
     local check = CreateFrame("Button", nil, page)
+    page.check = check
     check:SetSize(34, 34)
     check:SetPoint("TOPRIGHT", -16, -14)
     page.checkIcon = check:CreateTexture(nil, "ARTWORK"); page.checkIcon:SetAllPoints()
@@ -1654,9 +1877,68 @@ local function BuildPage(parent)
     page.empty:SetPoint("CENTER")
     page.empty:SetText(L["No characters saved yet."])
 
+    -- BoE Finder view and the button that switches to it
+    page.modeBtn = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
+    page.modeBtn:SetSize(130, 22)
+    page.modeBtn:SetPoint("TOPRIGHT", -16, -90)
+    page.modeBtn:SetScript("OnClick", function()
+        DB.settings.FinderMode = not DB.settings.FinderMode
+        finderOffset = 0
+        GameTooltip:Hide()
+        RefreshPage()
+    end)
+    page.modeBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        if DB.settings.FinderMode then
+            GameTooltip:SetText(L["Gear grid"])
+            GameTooltip:AddLine(L["Back to every character's gear scores."], 1, 1, 1, true)
+        else
+            GameTooltip:SetText(L["BoE Finder"])
+            GameTooltip:AddLine(L["Tradeable items your characters hold that would upgrade another of your characters on the same realm and faction, biggest upgrade first."], 1, 1, 1, true)
+        end
+        GameTooltip:Show()
+    end)
+    page.modeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    page.finder = CreateFrame("Frame", nil, page)
+    page.finder:SetAllPoints()
+    page.finder:Hide()
+    local function Header(x, text)
+        local fs = page.finder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("TOPLEFT", x, GRID_TOP - 10)
+        fs:SetText(text)
+    end
+    Header(40, L["Item"])
+    Header(FINDER_HOLDER_X, L["Held by"])
+    Header(FINDER_BEST_X, L["Best for"])
+    page.finderPrev = CreateFrame("Button", nil, page.finder, "UIPanelButtonTemplate")
+    page.finderPrev:SetSize(24, 20); page.finderPrev:SetText("<")
+    page.finderPrev:SetPoint("BOTTOMLEFT", 16, 12)
+    page.finderNext = CreateFrame("Button", nil, page.finder, "UIPanelButtonTemplate")
+    page.finderNext:SetSize(24, 20); page.finderNext:SetText(">")
+    page.finderNext:SetPoint("LEFT", page.finderPrev, "RIGHT", 4, 0)
+    page.finderPageText = page.finder:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    page.finderPageText:SetPoint("LEFT", page.finderNext, "RIGHT", 8, 0)
+    local function FinderPage(dir)
+        local per = math_max(1, math_floor((page:GetHeight() + FINDER_TOP - 40) / FINDER_ROW))
+        finderOffset = math_max(0, finderOffset + dir * per)
+        RefreshPage()
+    end
+    page.finderPrev:SetScript("OnClick", function() FinderPage(-1) end)
+    page.finderNext:SetScript("OnClick", function() FinderPage(1) end)
+    page.finderEmpty = page.finder:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+    page.finderEmpty:SetPoint("CENTER")
+    page.finderEmpty:SetWidth(460)
+    page.finderEmpty:SetText(L["None of the tradeable gear your characters hold upgrades another of your characters."])
+
     page:EnableMouseWheel(true)
     page:SetScript("OnMouseWheel", function(_, delta)
-        firstCol = math_max(1, firstCol - delta); RefreshPage()
+        if DB.settings.FinderMode then
+            finderOffset = math_max(0, finderOffset - delta * 3)
+        else
+            firstCol = math_max(1, firstCol - delta)
+        end
+        RefreshPage()
     end)
     page:SetScript("OnShow", function()
         -- Refresh this character first, so manual spec changes show up.

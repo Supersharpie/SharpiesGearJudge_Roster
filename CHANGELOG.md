@@ -1,5 +1,13 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.2
+
+### 🔎 BoE Finder
+- **New: BoE Finder**: A button on the Roster tab switches the grid to a list of every tradeable item your characters are holding (bags, plus bank and mailbox from their last visit) that upgrades another of your characters, biggest upgrade first. Each row shows the item, who holds it and where, the best character to send it to, and how many others it also upgrades.
+- **Who Can Get It**: Only characters on the same realm and faction as the holder are suggested, since only they can be mailed it. Each is scored the same way as the tooltip lines: their own spec, talents and level, items they already own or have on the way, and set bonuses. Items above a character's level show **at X**, and are left out when Include higher-level items is off.
+- **Soulbound Items Skipped**: Items already bound to the character holding them, and bind-on-pickup items, are never listed.
+- Hover a row to see the item and every character it upgrades; shift-click it to link the item in chat. Bags update when you log in on a character, and the bank and mailbox when you open them.
+
 ## 🚀 v1.0.1
 
 ### ⚔️ PvP
