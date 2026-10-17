@@ -1,5 +1,7 @@
 # Sharpie's Gear Judge - Roster (Alt Upgrades)
 
+**Version 1.0.3** | Requires **Sharpie's Gear Judge** | Works on **WoW Forever**, **Classic Era** and **TBC Anniversary**
+
 A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance which of your other characters a BoE item would upgrade, and by how much.
 
 ## 🌟 Features
@@ -7,11 +9,13 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 ### 🧾 Alt Upgrades on Tooltips
 - Hover any tradeable item and a **Roster upgrades** section lists every alt it upgrades, biggest first.
 - Each line shows the alt's spec and level, the size of the upgrade (**BIG**, **mid** or **small**, as a percent of that alt's total gear score), and whether they can use it **now** or only **at level X**.
-- Each alt's own spec, talents and level are taken into account: the item is scored with the same Gear Judge weights that alt uses on their own tooltips. Multi-spec (tracked specs) is included, and the best spec is shown.
+- Each alt's own spec, talents and level are taken into account: the item is scored with the same Gear Judge weights that alt uses on their own tooltips, including its Gear for PvP setting. Multi-spec (tracked specs) is included, and the best spec is shown.
+- **Dual Specialization (WoW Forever, level 40)**: both specs of each character are saved, so a line can say the item is an upgrade for an alt's secondary spec.
+- **You in the list**: when an item upgrades one of your other characters, the character you're on is ranked in the same list too, marked **(you)**.
 - Soulbound and bind-on-pickup items are skipped by default, since they can't be sent to an alt.
 - Set bonuses count: a line says when an item **completes** a set bonus for that alt, and an item that would **break** one isn't shown as an upgrade unless it's still better overall.
 - Relics (librams, idols, totems) are scored with the alt's own class data, and a second copy of a unique ring or trinket the alt already wears doesn't count as an upgrade.
-- Class and racial weapon bonuses count too (Sword Specialization, Weaponmaster, Hack and Slash and so on), using that alt's own race, talents and level. This needs Sharpie's Gear Judge 3.2.1 or newer.
+- Class weapon talents count too (Weaponmaster, Hack and Slash, the TBC weapon specializations and so on), using that alt's own talents and level, as do racial weapon bonuses on versions that still have them (WoW Forever has removed its weapon racials).
 - Only the **top 3** alts are listed by default (change it on the Roster tab), and any alt can be left off tooltips with the checkbox on its column.
 
 ### 🎒 Bags, Bank and Mail Count Too
@@ -27,10 +31,12 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 - **Check an item**: drag an item onto the check slot (or shift-click one in your bags while the tab is open) to see each character's upgrade, with the slot it would replace highlighted.
 - A blue **+** on a cell means a better item for that slot is waiting in that character's bags, bank or mail (hover to see it).
 - Click a character's name to switch between their saved specs. Remove old characters with the **x**.
+- Each column shows when that character was last updated.
 
 ### 🔎 BoE Finder
 - The **BoE Finder** button on the Roster tab lists every tradeable item your characters are holding (bags, bank and mailbox) that upgrades another of your characters, biggest upgrade first, with who holds it and who to send it to.
 - Only characters on the holder's realm and faction are suggested (they're the ones you can mail it to), and items already soulbound are skipped.
+- Items above a character's level show **at X** (or are left out when Include higher-level items is off).
 - Hover a row for every character it upgrades; shift-click to link the item.
 
 ## ⚙️ How It Works
@@ -43,3 +49,15 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 
 ## 📝 Notes
 - A snapshot is only as fresh as that character's last login. Characters not seen for a week are marked.
+- Each character is scored with the weights saved at its last login. After a Gear Judge update changes the weights, characters you haven't logged into since are marked **needs login**; log in once to refresh them.
+
+## 🌍 Translations
+- Roster is translated into English, German, Spanish (Spain and Latin America), French, Brazilian Portuguese, Russian, Korean and Traditional Chinese.
+
+## ⚙️ Installation
+1. Ensure the core **Sharpie's Gear Judge** addon is installed.
+2. Place the `SharpiesGearJudge_Roster` folder into your `Interface/AddOns` directory.
+3. Log in on each of your characters once so Roster can save them.
+
+## 💬 Feedback
+Found a bug? Come say hi on the **[Discord](https://discord.gg/aYmhmtGxYs)**.
