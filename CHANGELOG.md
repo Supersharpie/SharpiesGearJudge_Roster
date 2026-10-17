@@ -1,5 +1,13 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.3
+
+### 🔄 Out-of-Date Characters Flagged
+- Each character is scored with the weights saved the last time you logged into it. After a Gear Judge update changes the weights, characters you haven't logged into since still use the old ones, so their upgrade percentages can differ from what they'd show logged in. Those characters now say **needs login** next to their name in tooltips and the BoE Finder, and in place of the "updated" date on the Roster grid. Logging into the character once refreshes it.
+
+### 🙋 You in the List
+- When an item upgrades one of your other characters, the tooltip's Roster list now includes the character you're on too, marked **(you)** and measured against what you're wearing, so you can see who gains most in one ranked list. It isn't shown when no other character is listed, since the Gear Judge Upgrade line above already covers that.
+
 ## 🚀 v1.0.2
 
 ### 🔎 BoE Finder

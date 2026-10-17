@@ -114,6 +114,24 @@ local function DaysOld(alt)
     return math_floor((time() - alt.updated) / 86400)
 end
 
+-- The core version a snapshot was taken with. An update can change the weights,
+-- and a character keeps its old ones until you next log into it.
+local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+local function CoreVersion()
+    return GetMeta and GetMeta("SharpiesGearJudge", "Version") or nil
+end
+local function OldWeights(alt)
+    local v = CoreVersion()
+    return v ~= nil and alt.key ~= PlayerKey() and alt.core ~= v
+end
+-- " needs login" (old weights) or " Nd old" after a character's name, or "".
+local function StaleNote(alt)
+    if OldWeights(alt) then return " |cffff8800" .. L["needs login"] .. "|r" end
+    local days = DaysOld(alt)
+    if days >= STALE_DAYS then return " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
+    return ""
+end
+
 local function IsShieldTank(class, spec)
     if class ~= "WARRIOR" and class ~= "PALADIN" and class ~= "SHAMAN" then return false end
     local up = string.upper(spec or "")
@@ -741,6 +759,7 @@ local function TakeSnapshot()
         statsOnly = statsOnly,
         level = UnitLevel("player"),
         updated = time(),
+        core = CoreVersion(),   -- weights version (OldWeights)
         canDW = canDW,
         scoring = ScoringOptions(),
         validWeapons = valid,
@@ -1052,8 +1071,9 @@ end
 
 -- One alt, one or all of its specs. Result: { state = "cant" | "none" |
 -- "stashed" (would be an upgrade, but a bag/bank item is better) | "up",
--- delta, pct, slot, spec, atLevel, stash }.
-local function JudgeForAlt(alt, link, info, onlySpec)
+-- delta, pct, slot, spec, atLevel, stash }. vsEquipped: against worn gear only, as
+-- the core's own Upgrade line does (the current character, who may hold the item).
+local function JudgeForAlt(alt, link, info, onlySpec, vsEquipped)
     if not AltCanUse(alt, link, info) then return { state = "cant" } end
     local res = { state = "none" }
     -- Another class's relic on a core that can't score it for them: say nothing.
@@ -1062,6 +1082,7 @@ local function JudgeForAlt(alt, link, info, onlySpec)
     for spec, sd in pairs(alt.specs or {}) do
         if not onlySpec or spec == onlySpec then
             local d, slotId, eqD, bar, gained, broken = SpecDelta(alt, spec, sd, link, info.equipLoc, info.reqLevel)
+            if vsEquipped then d, bar = eqD, nil end
             if slotId then res.slot = res.slot or slotId end
             if eqD and eqD > 0.05 and (not d or d <= 0.05) and bar then stashedBy = stashedBy or bar end
             if d and d > 0.05 and (not res.delta or d > res.delta) then
@@ -1124,6 +1145,14 @@ local function UpgradesFor(link)
                 list[#list + 1] = res
             end
         end
+    end
+    -- You, from your own snapshot (taken at login and on every gear, level or talent
+    -- change), against what you wear: one ranked list of who gains most. Only when
+    -- another character is listed; alone it would repeat the core's Upgrade line.
+    local mine = DB.chars[me]
+    if #list > 0 and mine and not DB.tooltipOff[me] and (DB.settings.ShowFuture or (info.reqLevel or 0) <= (mine.level or 0)) then
+        local res = JudgeForAlt(mine, link, info, nil, true)
+        if res.state == "up" then res.alt, res.me = mine, true; list[#list + 1] = res end
     end
     table_sort(list, function(a, b) return SortKey(a) > SortKey(b) end)
     if Roster.missing then return list end
@@ -1254,8 +1283,7 @@ local function DrawTooltip(tooltip)
         end
         local alt = res.alt
         local left = "  " .. ColoredName(alt) .. " |cff888888(" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. ")|r"
-        local days = DaysOld(alt)
-        if days >= STALE_DAYS then left = left .. " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
+        left = left .. (res.me and (" |cff888888" .. L["(you)"] .. "|r") or StaleNote(alt))
         tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
     end
     tooltip:Show()
@@ -1599,7 +1627,11 @@ local function FillColumn(col, entry, judge)
 
     local days = DaysOld(alt)
     local dayText = (days == 0) and L["today"] or string_format(L["%dd ago"], days)
-    upd.text:SetText((days >= STALE_DAYS and "|cffff5555" or "|cff888888") .. dayText .. "|r")
+    if OldWeights(alt) then
+        upd.text:SetText("|cffff8800" .. L["needs login"] .. "|r")
+    else
+        upd.text:SetText((days >= STALE_DAYS and "|cffff5555" or "|cff888888") .. dayText .. "|r")
+    end
 end
 
 -- -------------------------------------------------------------------------
@@ -1673,12 +1705,11 @@ local function RefreshFinder()
             r.item:SetText(e.link .. ((e.count > 1) and (" |cff888888x" .. e.count .. "|r") or ""))
             local h = ColoredName(e.holder) .. (e.me and (" |cff888888" .. L["(you)"] .. "|r") or "")
                 .. " |cff888888(" .. WhereText(e.where) .. ")|r"
-            local days = DaysOld(e.holder)
-            if not e.me and days >= STALE_DAYS then h = h .. " |cff666666" .. string_format(L["%dd old"], days) .. "|r" end
+            if not e.me then h = h .. StaleNote(e.holder) end
             r.holder:SetText(h)
             local res = e.list[1]
             r.best:SetWidth(bestW)
-            r.best:SetText(ColoredName(res.alt) .. " |cff888888(" .. SpecLabel(res.alt.specs[res.spec]) .. ")|r "
+            r.best:SetText(ColoredName(res.alt) .. StaleNote(res.alt) .. " |cff888888(" .. SpecLabel(res.alt.specs[res.spec]) .. ")|r "
                 .. TierText(res) .. " " .. WhenText(res))
             r.more:SetText((#e.list > 1) and string_format(L["+%d more"], #e.list - 1) or "")
             r:Show()
