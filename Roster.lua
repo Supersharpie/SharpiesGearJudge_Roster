@@ -5,9 +5,10 @@
 --
 -- Each character saves a snapshot when it logs in, levels, changes talents
 -- or changes gear: the finished Gear Judge weights for its active spec (and
--- any tracked specs), plus the score of every equipped item. Other
--- characters score new items against those saved weights. Nothing is rebuilt
--- for an alt, so its talents, level curves and caps are already baked in.
+-- its off-specs and other Dual Specialization spec), plus the score of every
+-- item in each spec's set. Other characters score new items against those
+-- saved weights. Nothing is rebuilt for an alt, so its talents, level curves
+-- and caps are already baked in.
 --
 -- Items are always scored by their full link, so random suffixes ("of the
 -- Bear" vs "of the Tiger") stay correct.
@@ -685,7 +686,6 @@ local function TakeSnapshot()
     if type(weights) ~= "table" or not next(weights) or not spec then return false end
 
     local key = PlayerKey()
-    local coreKey = (MSC.GetPlayerKey and MSC:GetPlayerKey()) or key   -- core TalentProfiles/GearProfiles
     local state = {}
     local gear = {}
     for _, s in ipairs(GEAR_SLOTS) do gear[s] = GetInventoryItemLink("player", s) end
@@ -709,20 +709,20 @@ local function TakeSnapshot()
     local specs = {}
     specs[spec] = SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
 
-    -- Tracked specs (the core's multi-spec), with the talents and gear set
-    -- saved for each, the same way the core's tooltip scores them.
-    local tracked = SGJ_Settings and SGJ_Settings.TrackedSpecs
-    if tracked and MSC.GetWeightsByName then
-        for tSpec, on in pairs(tracked) do
-            if on and tSpec ~= spec and not specs[tSpec] then
+    -- Off-specs (the core's per-character ticks, leveling ones at this level),
+    -- with the talents last played in each, against the best gear owned for it
+    -- (the core's MSC.GetBestOwnedGear: worn, bags, bank), as the core's tooltip.
+    if MSC.GetTrackedSpecs and MSC.GetWeightsByName then
+        for pick in pairs(MSC.GetTrackedSpecs()) do
+            local tSpec = MSC.ResolveTrackedProfile(pick)
+            if tSpec ~= spec and not specs[tSpec] then
                 local origTalents = MSC.TalentCache
-                local tp = SGJ_Settings.TalentProfiles
-                if tp and tp[coreKey] and tp[coreKey][tSpec] then MSC.TalentCache = tp[coreKey][tSpec] end
+                local saved = MSC.GetSavedTalents(pick, tSpec)
+                if saved then MSC.TalentCache = saved end
                 local ok, tWeights = pcall(MSC.GetWeightsByName, tSpec)
                 if ok and type(tWeights) == "table" and next(tWeights) then
-                    local gp = SGJ_Settings.GearProfiles
-                    local tGear = gp and gp[coreKey] and gp[coreKey][tSpec]
-                    specs[tSpec] = SnapshotSpec(tWeights, tSpec, tGear or gear, state, stashItems, canDW)
+                    local okG, tGear = pcall(MSC.GetBestOwnedGear, tWeights, tSpec)
+                    specs[tSpec] = SnapshotSpec(tWeights, tSpec, (okG and tGear) or gear, state, stashItems, canDW)
                 end
                 MSC.TalentCache = origTalents
             end
@@ -730,7 +730,7 @@ local function TakeSnapshot()
     end
 
     -- Dual Specialization: the spec you're not in, scored with its own talents,
-    -- profile, Talents build and Gear for PvP, against the gear last worn in it.
+    -- profile, Talents build and Gear for PvP, against the best gear owned for it.
     -- Its key gets "@<group>" (both specs can use the same profile); sd.spec is
     -- the real profile key used for scoring.
     if MSC.HasDualSpec and MSC.HasDualSpec() and MSC.WithSpecGroup and MSC.GetWeightsForGroup then
@@ -740,7 +740,8 @@ local function TakeSnapshot()
         MSC.WithSpecGroup(other, function()
             local oWeights, oSpec = MSC:GetWeightsForGroup(other)
             if type(oWeights) ~= "table" or not next(oWeights) or not oSpec then return end
-            local oGear = MSC.GetSpecGear and MSC.GetSpecGear(other)
+            local oGear = MSC.GetBestOwnedGear and MSC.GetBestOwnedGear(oWeights, oSpec)
+                or (MSC.GetSpecGear and MSC.GetSpecGear(other))
             local entry = SnapshotSpec(oWeights, oSpec, oGear or gear, state, stashItems, canDW)
             entry.spec, entry.group, entry.groupName = oSpec, other, MSC.SpecGroupName(other)
             specs[oSpec .. "@" .. other] = entry
@@ -800,6 +801,10 @@ end
 -- characters keep the weights from their last login until they log in.)
 if MSC and MSC.PvPToggleListeners then
     table.insert(MSC.PvPToggleListeners, function() RequestSnapshot(1) end)
+end
+-- Off-spec ticks changed: snapshot again so alts see the new list.
+if MSC and MSC.OffSpecListeners then
+    table.insert(MSC.OffSpecListeners, function() RequestSnapshot(1) end)
 end
 
 -- =========================================================================

@@ -9,8 +9,8 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 ### 🧾 Alt Upgrades on Tooltips
 - Hover any tradeable item and a **Roster upgrades** section lists every alt it upgrades, biggest first.
 - Each line shows the alt's spec and level, the size of the upgrade (**BIG**, **mid** or **small**, as a percent of that alt's total gear score), and whether they can use it **now** or only **at level X**.
-- Each alt's own spec, talents and level are taken into account: the item is scored with the same Gear Judge weights that alt uses on their own tooltips, including its Gear for PvP setting. Multi-spec (tracked specs) is included, and the best spec is shown.
-- **Dual Specialization (WoW Forever, level 40)**: both specs of each character are saved, so a line can say the item is an upgrade for an alt's secondary spec.
+- Each alt's own spec, talents and level are taken into account: the item is scored with the same Gear Judge weights that alt uses on their own tooltips, including its Gear for PvP setting. Each alt's off-specs (ticked in the Gear Judge's Off-Specs settings on that alt) are included, judged against the best gear it owns for them, and the best spec is shown.
+- **Dual Specialization (WoW Forever, Season of Discovery, TBC Anniversary)**: both specs of each character are saved, so a line can say the item is an upgrade for an alt's secondary spec.
 - **You in the list**: when an item upgrades one of your other characters, the character you're on is ranked in the same list too, marked **(you)**.
 - Soulbound and bind-on-pickup items are skipped by default, since they can't be sent to an alt.
 - Set bonuses count: a line says when an item **completes** a set bonus for that alt, and an item that would **break** one isn't shown as an upgrade unless it's still better overall.

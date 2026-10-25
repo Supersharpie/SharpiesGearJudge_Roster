@@ -1,5 +1,11 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.4
+
+### 🔀 Off-Specs for Alts
+- Each alt's off-specs (ticked in the Gear Judge's Off-Specs settings on that alt) are judged against the best gear it owns for them, bags and bank included, so a healing drop shows for a Feral Druid alt's healing set.
+- Dual Specialization alts on Season of Discovery and TBC Anniversary now save both specs.
+
 ## 🚀 v1.0.3
 
 ### 🔄 Out-of-Date Characters Flagged
