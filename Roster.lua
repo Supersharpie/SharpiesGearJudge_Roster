@@ -1326,6 +1326,19 @@ local LABEL_W, COL_W, ROW_H, HEAD_H, GRID_TOP = 100, 140, 22, 40, -116
 local page, cols, rowFrames, firstCol, checkLink = nil, {}, {}, 1, nil
 local extraRows = { "TOTAL", "CHECK", "UPDATED" }
 
+-- Core theme (flat panels, one accent); nil on older cores, which keep the old colours.
+local function Theme() return MSC and MSC.Theme end
+local function Heading(fs, color, width) if MSC and MSC.StyleHeading and MSC.Theme then MSC.StyleHeading(fs, color, width) end end
+local function TextColor(fs, key, r, g, b)
+    local T = Theme()
+    if T and T[key] then fs:SetTextColor(T[key][1], T[key][2], T[key][3]) else fs:SetTextColor(r, g, b) end
+end
+local function ThemeHex(key, fallback)
+    local c = Theme() and Theme()[key]
+    if not c then return fallback end
+    return string_format("|cff%02x%02x%02x", math_floor(c[1] * 255), math_floor(c[2] * 255), math_floor(c[3] * 255))
+end
+
 local function SortedAlts()
     local me = PlayerKey()
     local list = {}
@@ -1470,12 +1483,19 @@ local function CreateColumn(parent, index)
     local head = CreateFrame("Button", nil, parent)
     head:SetSize(COL_W - 4, HEAD_H)
     head:SetPoint("TOPLEFT", x, GRID_TOP)
-    head.bg = head:CreateTexture(nil, "BACKGROUND"); head.bg:SetAllPoints(); head.bg:SetColorTexture(1, 1, 1, 0.05)
+    local T = Theme()
+    head.bg = head:CreateTexture(nil, "BACKGROUND"); head.bg:SetAllPoints()
+    if T then head.bg:SetColorTexture(unpack(T.Panel)) else head.bg:SetColorTexture(1, 1, 1, 0.05) end
+    if T then  -- thin accent line along the bottom
+        local line = head:CreateTexture(nil, "ARTWORK"); line:SetHeight(1)
+        line:SetPoint("BOTTOMLEFT"); line:SetPoint("BOTTOMRIGHT"); line:SetColorTexture(T.Accent[1], T.Accent[2], T.Accent[3], 0.5)
+    end
+    head.hl = head:CreateTexture(nil, "HIGHLIGHT"); head.hl:SetAllPoints(); head.hl:SetColorTexture(1, 1, 1, T and 0.04 or 0)
     head.name = head:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     head.name:SetPoint("TOPLEFT", 4, -4); head.name:SetPoint("TOPRIGHT", -30, -4); head.name:SetJustifyH("LEFT"); head.name:SetWordWrap(false)
     head.sub = head:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     head.sub:SetPoint("TOPLEFT", head.name, "BOTTOMLEFT", 0, -3); head.sub:SetPoint("RIGHT", -4, 0); head.sub:SetJustifyH("LEFT"); head.sub:SetWordWrap(false)
-    head.sub:SetTextColor(0.7, 0.7, 0.7)
+    TextColor(head.sub, "Muted", 0.7, 0.7, 0.7)
     head:SetScript("OnClick", function(self)
         local alt = self.alt
         if not alt then return end
@@ -1509,12 +1529,12 @@ local function CreateColumn(parent, index)
     local del = CreateFrame("Button", nil, head)
     del:SetSize(12, 12); del:SetPoint("TOPRIGHT", -2, -3)
     del.text = del:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); del.text:SetPoint("CENTER"); del.text:SetText("x")
-    del.text:SetTextColor(0.6, 0.6, 0.6)
+    TextColor(del.text, "Muted", 0.6, 0.6, 0.6)
     del:SetScript("OnEnter", function(self)
         self.text:SetTextColor(1, 0.3, 0.3)
         GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText(L["Remove from the Roster"]); GameTooltip:Show()
     end)
-    del:SetScript("OnLeave", function(self) self.text:SetTextColor(0.6, 0.6, 0.6); GameTooltip:Hide() end)
+    del:SetScript("OnLeave", function(self) TextColor(self.text, "Muted", 0.6, 0.6, 0.6); GameTooltip:Hide() end)
     del:SetScript("OnClick", function()
         local alt = head.alt
         if alt then
@@ -1548,6 +1568,9 @@ local function CreateColumn(parent, index)
         cell:SetSize(COL_W - 4, ROW_H - 2)
         cell:SetPoint("TOPLEFT", x, GRID_TOP - HEAD_H - 4 - (r - 1) * ROW_H)
         cell.bg = cell:CreateTexture(nil, "BACKGROUND"); cell.bg:SetAllPoints(); cell.bg:SetColorTexture(0, 0, 0, 0)
+        -- 2px accent bar on the left marks the slot the checked item goes in
+        cell.mark = cell:CreateTexture(nil, "BORDER"); cell.mark:SetWidth(2); cell.mark:SetPoint("TOPLEFT"); cell.mark:SetPoint("BOTTOMLEFT"); cell.mark:Hide()
+        if T then cell.mark:SetColorTexture(unpack(T.Accent)) end
         cell.icon = cell:CreateTexture(nil, "ARTWORK"); cell.icon:SetSize(16, 16); cell.icon:SetPoint("LEFT", 3, 0)
         cell.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
         cell.text = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -1578,6 +1601,7 @@ local function FillColumn(col, entry, judge)
     local filled, sum = 0, 0
     for _, e in pairs(slots) do filled = filled + 1; sum = sum + (e.score or 0) end
     local avg = filled > 0 and sum / filled or 0
+    local valueHex, themed = ThemeHex("Value", "|cffffffff"), Theme() and true or false
 
     for r, slotId in ipairs(GEAR_SLOTS) do
         local cell = col.cells[r]
@@ -1586,13 +1610,13 @@ local function FillColumn(col, entry, judge)
         cell.stashList = StashFor(owned, slotId, e and e.score or 0)
         cell.altLevel = alt.level
         local mark = cell.stashList and " |cff00ccff+|r" or ""
-        cell.bg:SetColorTexture(0, 0, 0, 0)
+        cell.bg:SetColorTexture(0, 0, 0, 0); cell.mark:Hide()
         if e then
             cell.link = e.link
             cell.icon:SetTexture(select(5, GetItemInfoInstant(e.link)))
             cell.icon:Show()
             local weak = avg > 0 and e.score < avg * 0.5
-            cell.text:SetText((weak and "|cffff9933" or "|cffffffff") .. string_format("%.1f", e.score) .. "|r" .. mark)
+            cell.text:SetText((weak and "|cffff9933" or valueHex) .. string_format("%.1f", e.score) .. "|r" .. mark)
             cell.scoreText = string_format("%.1f", e.score)
             cell.specText = SpecLabel(sd)
         elseif slotId == 17 and slots[16] and slots[16].twoHand then
@@ -1603,14 +1627,16 @@ local function FillColumn(col, entry, judge)
             cell.text:SetText("|cffff5555" .. L["empty"] .. "|r" .. mark)
             cell.bg:SetColorTexture(1, 0, 0, 0.06)
         end
-        if judge and judge.slot == slotId then cell.bg:SetColorTexture(1, 0.82, 0, 0.18) end
+        if judge and judge.slot == slotId then
+            if themed then cell.bg:SetColorTexture(1, 1, 1, 0.06); cell.mark:Show() else cell.bg:SetColorTexture(1, 0.82, 0, 0.18) end
+        end
         cell:Show()
     end
 
     local base = #GEAR_SLOTS
     local total, check, upd = col.cells[base + 1], col.cells[base + 2], col.cells[base + 3]
-    for _, c in ipairs({ total, check, upd }) do c.icon:Hide(); c.link = nil; c.scoreText = nil; c.stashList = nil; c.bg:SetColorTexture(0, 0, 0, 0); c:Show() end
-    total.text:SetText("|cffffd100" .. string_format("%.1f", sd and sd.total or 0) .. "|r")
+    for _, c in ipairs({ total, check, upd }) do c.icon:Hide(); c.link = nil; c.scoreText = nil; c.stashList = nil; c.bg:SetColorTexture(0, 0, 0, 0); c.mark:Hide(); c:Show() end
+    total.text:SetText(ThemeHex("Accent", "|cffffd100") .. string_format("%.1f", sd and sd.total or 0) .. "|r")
 
     if not checkLink then
         check:Hide()
@@ -1671,9 +1697,13 @@ local function CreateFinderRow(parent, i)
     r:SetPoint("TOPLEFT", 8, FINDER_TOP - (i - 1) * FINDER_ROW)
     r:SetPoint("RIGHT", parent, "RIGHT", -8, 0)
     r:SetHeight(FINDER_ROW - 2)
-    local shade = r:CreateTexture(nil, "BACKGROUND", nil, -1); shade:SetAllPoints()
-    shade:SetColorTexture(1, 1, 1, (i % 2 == 0) and 0.03 or 0)
-    local hl = r:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints(); hl:SetColorTexture(1, 0.82, 0, 0.08)
+    local themed = Theme() and true or false
+    local shade = r:CreateTexture(nil, "BACKGROUND", nil, -1)
+    if themed then  -- faint 1px separator under the row
+        shade:SetHeight(1); shade:SetPoint("BOTTOMLEFT"); shade:SetPoint("BOTTOMRIGHT"); shade:SetColorTexture(1, 1, 1, 0.05)
+    else shade:SetAllPoints(); shade:SetColorTexture(1, 1, 1, (i % 2 == 0) and 0.03 or 0) end
+    local hl = r:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints()
+    if themed then hl:SetColorTexture(1, 1, 1, 0.04) else hl:SetColorTexture(1, 0.82, 0, 0.08) end
     r.icon = r:CreateTexture(nil, "ARTWORK"); r.icon:SetSize(18, 18); r.icon:SetPoint("LEFT", 8, 0)
     local function Text(x, w)
         local fs = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -1685,6 +1715,7 @@ local function CreateFinderRow(parent, i)
     r.best = Text(FINDER_BEST_X - 8, 240)
     r.more = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     r.more:SetPoint("RIGHT", -8, 0)
+    if themed then TextColor(r.more, "Muted") end
     r:RegisterForClicks("LeftButtonUp")
     r:SetScript("OnEnter", FinderRowOnEnter)
     r:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1785,6 +1816,7 @@ local function Checkbox(parent, label, key, anchor, x)
     cb.label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     cb.label:SetPoint("LEFT", cb, "RIGHT", 2, 1)
     cb.label:SetText(label)
+    if Theme() then TextColor(cb.label, "Text") end
     cb:SetScript("OnShow", function(self) self:SetChecked(DB and DB.settings[key]) end)
     cb:SetScript("OnClick", function(self)
         DB.settings[key] = self:GetChecked() and true or false
@@ -1799,13 +1831,14 @@ local function BuildPage(parent)
     page:Hide()
 
     local title = page:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 16, -14)
+    title:SetPoint("TOPLEFT", 16, Theme() and -9 or -14)
     title:SetText(L["Roster"])
     title:SetTextColor(1, 0.82, 0)
+    Heading(title, "Gold", 470)
 
     local sub = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
-    sub:SetWidth(470); sub:SetJustifyH("LEFT"); sub:SetTextColor(0.7, 0.7, 0.7)
+    sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, Theme() and -9 or -4)
+    sub:SetWidth(470); sub:SetJustifyH("LEFT"); TextColor(sub, "Muted", 0.7, 0.7, 0.7)
     sub:SetText(L["Every character's gear, scored for its own spec. Log in on each alt once to add it."])
     page.sub = sub
 
@@ -1816,6 +1849,16 @@ local function BuildPage(parent)
     check:SetPoint("TOPRIGHT", -16, -14)
     page.checkIcon = check:CreateTexture(nil, "ARTWORK"); page.checkIcon:SetAllPoints()
     local border = check:CreateTexture(nil, "OVERLAY"); border:SetAllPoints(); border:SetColorTexture(1, 0.82, 0, 0.15)
+    local T = Theme()
+    if T then  -- flat 1px accent frame instead of the gold tint
+        border:SetColorTexture(0, 0, 0, 0)
+        local a = T.Accent
+        for _, p in ipairs({ { "TOPLEFT", "TOPRIGHT", true }, { "BOTTOMLEFT", "BOTTOMRIGHT", true }, { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
+            local e = check:CreateTexture(nil, "OVERLAY"); e:SetColorTexture(a[1], a[2], a[3], 0.6)
+            e:SetPoint(p[1]); e:SetPoint(p[2])
+            if p[3] then e:SetHeight(1) else e:SetWidth(1) end
+        end
+    end
     check:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     local function TakeCursor()
         local kind, _, link = GetCursorInfo()
@@ -1884,11 +1927,14 @@ local function BuildPage(parent)
         f:SetPoint("TOPLEFT", 8, GRID_TOP - HEAD_H - 4 - (r - 1) * ROW_H)
         f:SetPoint("RIGHT", page, "RIGHT", -8, 0)
         f:SetHeight(ROW_H - 2)
-        local shade = f:CreateTexture(nil, "BACKGROUND", nil, -1); shade:SetAllPoints()
-        shade:SetColorTexture(1, 1, 1, (r % 2 == 0) and 0.03 or 0)
+        local shade = f:CreateTexture(nil, "BACKGROUND", nil, -1)
+        if T then  -- faint 1px separator under the row
+            shade:SetHeight(1); shade:SetPoint("BOTTOMLEFT", 0, -1); shade:SetPoint("BOTTOMRIGHT", 0, -1); shade:SetColorTexture(1, 1, 1, 0.05)
+        else shade:SetAllPoints(); shade:SetColorTexture(1, 1, 1, (r % 2 == 0) and 0.03 or 0) end
         local fs = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         fs:SetPoint("LEFT", 4, 0); fs:SetWidth(LABEL_W - 12); fs:SetJustifyH("LEFT"); fs:SetWordWrap(false)
         fs:SetText(text)
+        if T then TextColor(fs, "Text") end
         return f
     end
     for r, slotId in ipairs(GEAR_SLOTS) do RowLabel(r, SLOT_LABELS[slotId] or tostring(slotId)) end
@@ -1912,6 +1958,7 @@ local function BuildPage(parent)
     page.empty = page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
     page.empty:SetPoint("CENTER")
     page.empty:SetText(L["No characters saved yet."])
+    if T then TextColor(page.pageText, "Muted"); TextColor(page.empty, "Muted") end
 
     -- BoE Finder view and the button that switches to it
     page.modeBtn = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
@@ -1943,10 +1990,16 @@ local function BuildPage(parent)
         local fs = page.finder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         fs:SetPoint("TOPLEFT", x, GRID_TOP - 10)
         fs:SetText(text)
+        Heading(fs, "Gold")
     end
     Header(40, L["Item"])
     Header(FINDER_HOLDER_X, L["Held by"])
     Header(FINDER_BEST_X, L["Best for"])
+    if T then  -- one accent line under the column titles
+        local line = page.finder:CreateTexture(nil, "ARTWORK"); line:SetHeight(1)
+        line:SetPoint("TOPLEFT", 8, FINDER_TOP + 4); line:SetPoint("RIGHT", page.finder, "RIGHT", -8, 0)
+        line:SetColorTexture(T.Accent[1], T.Accent[2], T.Accent[3], 0.5)
+    end
     page.finderPrev = CreateFrame("Button", nil, page.finder, "UIPanelButtonTemplate")
     page.finderPrev:SetSize(24, 20); page.finderPrev:SetText("<")
     page.finderPrev:SetPoint("BOTTOMLEFT", 16, 12)
@@ -1966,6 +2019,7 @@ local function BuildPage(parent)
     page.finderEmpty:SetPoint("CENTER")
     page.finderEmpty:SetWidth(460)
     page.finderEmpty:SetText(L["None of the tradeable gear your characters hold upgrades another of your characters."])
+    if T then TextColor(page.finderPageText, "Muted"); TextColor(page.finderEmpty, "Muted") end
 
     page:EnableMouseWheel(true)
     page:SetScript("OnMouseWheel", function(_, delta)

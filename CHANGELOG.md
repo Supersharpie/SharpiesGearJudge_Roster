@@ -2,6 +2,9 @@
 
 ## 🚀 v1.0.4
 
+### 🎨 New Look
+- Matches Gear Judge's new window: colored section titles, slimmer bars and your class color as the accent.
+
 ### 🔀 Off-Specs for Alts
 - Each alt's off-specs (ticked in the Gear Judge's Off-Specs settings on that alt) are judged against the best gear it owns for them, bags and bank included, so a healing drop shows for a Feral Druid alt's healing set.
 - Dual Specialization alts on Season of Discovery and TBC Anniversary now save both specs.
