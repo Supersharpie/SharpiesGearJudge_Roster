@@ -240,8 +240,9 @@ local function ScoringSig(alt)
 end
 
 -- alt: the saved character the item is scored for (nil = the logged-in one).
--- The alt's saved scoring options are applied for the call and always restored.
-local function ScoreItem(link, slotId, weights, spec, alt)
+-- Runs fn(...) protected with the alt's saved scoring options ("Current Only"
+-- enchants read as none, see above), always restoring the live ones.
+local function WithScoring(alt, fn, ...)
     local s = SGJ_Settings
     local e, g, q, c
     if s then
@@ -254,8 +255,13 @@ local function ScoreItem(link, slotId, weights, spec, alt)
         end
         if s.EnchantMode == 2 then s.EnchantMode = 1 end
     end
-    local ok, score = pcall(RawScore, link, slotId, weights, spec, alt)
+    local ok, res = pcall(fn, ...)
     if s then s.EnchantMode, s.GemMode, s.GemQuality, s.AssumeCampingBuffs = e, g, q, c end
+    return ok, res
+end
+
+local function ScoreItem(link, slotId, weights, spec, alt)
+    local ok, score = WithScoring(alt, RawScore, link, slotId, weights, spec, alt)
     if ok then return score end
     if MSC.Debug then print("|cff00ccffSGJ Roster|r score error:", score) end
     return nil
@@ -330,6 +336,18 @@ local function SetValue(setID, count, weights, spec)
     return total, top
 end
 
+-- Hit Rating from a set's bonuses at `count` pieces (WoW Forever hit curve, CapFix).
+local function SetHit(setID, count)
+    local tiers = MSC.SetBonusScores and MSC.SetBonusScores[setID]
+    if not (tiers and MSC.HitRatingOf) then return 0 end
+    local hit = 0
+    for req, data in pairs(tiers) do
+        local r = tonumber(req)
+        if r and count >= r and type(data) == "table" and data.stats then hit = hit + MSC.HitRatingOf(data.stats) end
+    end
+    return hit
+end
+
 -- Set bonus change from putting newLink in place of the items in `replaced`
 -- slots. Returns score delta, tier gained (or nil), tier broken (or nil).
 local function SetDelta(sd, spec, newLink, replaced)
@@ -347,7 +365,7 @@ local function SetDelta(sd, spec, newLink, replaced)
         local id = slots[slotId] and SetIDOf(slots[slotId].link)
         if id then after[id] = (after[id] or counts[id] or 0) - 1 end
     end
-    local delta, gained, broken = 0, nil, nil
+    local delta, gained, broken, hit = 0, nil, nil, 0
     for id, n in pairs(after) do
         local before = counts[id] or 0
         if n ~= before then
@@ -356,9 +374,11 @@ local function SetDelta(sd, spec, newLink, replaced)
             delta = delta + (va - vb)
             if ta > tb then gained = math_max(gained or 0, ta) end
             if ta < tb then broken = math_max(broken or 0, tb) end
+            hit = hit + SetHit(id, n) - SetHit(id, before)
         end
     end
-    return delta, gained, broken
+    -- hit: the Hit Rating the set bonuses gain or lose (for the hit curve, CapFix)
+    return delta, gained, broken, hit
 end
 
 -- =========================================================================
@@ -416,7 +436,45 @@ local function OtherHandLink(slots, slotId)
     return other and other.link
 end
 
-local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pairBonus)
+-- Forever hit cap: a swap's hit is valued on the character's hit curve,
+-- saved with its snapshot (sd.hitCap, from MSC.ForeverHitCapSnapshot), the
+-- way the core's tooltip values it: hit past a cap discounted, hit lost
+-- below one charged in full. Cores without it (before 3.2.8) skip this.
+-- An item's Hit Rating as the scorer sees it for `alt` (its scoring options, its stats).
+local function ReadHit(link, slotId, weights, spec, alt)
+    return MSC.HitRatingOf(StatsOnlyFor(alt, link, MSC.SafeGetItemStats(link, slotId, weights, spec)))
+end
+local function HitOf(link, slotId, weights, spec, alt)
+    if not (link and MSC.HitRatingOf) then return 0 end
+    local ok, hit = WithScoring(alt, ReadHit, link, slotId, weights, spec, alt)
+    return (ok and tonumber(hit)) or 0
+end
+
+-- The worn slots an item takes over: both hands for a two-hander, the
+-- weaker of a ring or trinket pair, otherwise its own slot.
+local function ReplacedSlots(slots, slotId, twoHand)
+    if twoHand then return { 16, 17 } end
+    if slotId == 11 or slotId == 13 then
+        local a, b = slots[slotId], slots[slotId + 1]
+        if (b and b.score or 0) < (a and a.score or 0) then return { slotId + 1 } end
+    end
+    return { slotId }
+end
+
+-- Score change from the hit curve when an item with newHit Hit Rating takes
+-- over the `replaced` worn slots; setHit: the Hit Rating the swap's set
+-- bonuses gain (or lose, negative).
+local function CapFix(snap, slots, newHit, replaced, setHit)
+    if not (snap and snap.rating and MSC.ForeverHitCapCorrectionFor) then return 0 end
+    local out = 0
+    for _, s in ipairs(replaced) do local e = slots[s]; out = out + (e and e.hit or 0) end
+    local change = newHit - out + (setHit or 0)
+    if change == 0 then return 0 end
+    local ok, c = pcall(MSC.ForeverHitCapCorrectionFor, snap, snap.rating, snap.rating + change)
+    return (ok and tonumber(c)) or 0
+end
+
+local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pairBonus, hitCap)
     local out = {}
     for _, it in ipairs(stashItems) do
         local cands = CandidateSlots(it.loc, canDW)
@@ -426,6 +484,9 @@ local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pai
                 local other = (not TWO_HAND[it.loc]) and OtherHandLink(slots, slotId) or nil
                 local sc = FullScore(it.link, slotId, weights, spec, nil, nil, other)
                 if not sc then state.missing = true; sc = 0 end
+                if hitCap then
+                    sc = sc + CapFix(hitCap, slots, HitOf(it.link, slotId, weights, spec), ReplacedSlots(slots, slotId, TWO_HAND[it.loc]))
+                end
                 scores[slotId] = sc
                 -- a two-hander replaces both hands, so it has to beat both
                 local floor = TWO_HAND[it.loc] and BothHandsScore(slots, pairBonus) or EquippedFloor(slots, slotId)
@@ -454,6 +515,7 @@ end
 
 local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
     local slots, total = {}, 0
+    local cap = MSC.ForeverHitCapSnapshot and MSC.ForeverHitCapSnapshot(weights)
     for _, slotId in ipairs(GEAR_SLOTS) do
         local link = gear[slotId]
         if link then
@@ -461,7 +523,8 @@ local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
             local raw = ScoreItem(link, slotId, weights, spec)
             if not raw then state.missing = true; raw = 0 end
             local loc = select(4, GetItemInfoInstant(link))
-            slots[slotId] = { link = link, raw = raw, score = raw, twoHand = TWO_HAND[loc] or nil }
+            slots[slotId] = { link = link, raw = raw, score = raw, twoHand = TWO_HAND[loc] or nil,
+                              hit = cap and HitOf(link, slotId, weights, spec) or nil }
         end
     end
     -- Weapon bonuses: each hand's bonus next to the other hand (what a swap in
@@ -481,9 +544,35 @@ local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
         end
         for id, n in pairs(counts) do total = total + SetValue(id, n, weights, spec) end
     end
-    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state, canDW, pairBonus)
+    -- The saved hit curve, with the Hit Rating this gear carries (items plus
+    -- active set bonuses, like the core's character total).
+    local hitCap
+    if cap then
+        local knees = {}
+        for i, k in ipairs(cap.knees) do knees[i] = { cap = k.cap, mult = k.mult } end
+        -- Where the character stands: the worn gear's real Hit Rating (enchants and
+        -- set bonuses in, as the core's hit curve reads it) when this is the worn
+        -- gear, else the items' hit plus their set bonuses.
+        local worn = true
+        for _, slotId in ipairs(GEAR_SLOTS) do
+            if gear[slotId] ~= GetInventoryItemLink("player", slotId) then worn = false; break end
+        end
+        local rating = worn and MSC.GetGearHitRating and MSC.GetGearHitRating("MELEE")
+        if not rating then
+            rating = 0
+            local counts = {}
+            for _, e in pairs(slots) do
+                rating = rating + (e.hit or 0)
+                local id = MSC.ItemSetMap and SetIDOf(e.link)
+                if id then counts[id] = (counts[id] or 0) + 1 end
+            end
+            for id, n in pairs(counts) do rating = rating + SetHit(id, n) end
+        end
+        hitCap = { w = cap.w, full = cap.full, base = cap.base, knees = knees, rating = rating }
+    end
+    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state, canDW, pairBonus, hitCap)
     return { pretty = PrettyName(spec), weights = CopyScalars(weights), slots = slots, total = total, stash = stash,
-             pairBonus = pairBonus, talentRanks = TalentRanks() }
+             pairBonus = pairBonus, talentRanks = TalentRanks(), hitCap = hitCap }
 end
 
 local AltCanUse, ItemInfo  -- defined in sections 4 and 5
@@ -922,6 +1011,10 @@ local function MailedFor(alt, spec, sd)
                         local other = (not twoHand) and OtherHandLink(sd.slots, slotId) or nil
                         local v = FullScore(m.link, slotId, sd.weights, sd.spec or spec, alt, sd, other)
                         if not v then Roster.missing = true end
+                        if v and sd.hitCap then
+                            v = v + CapFix(sd.hitCap, sd.slots, HitOf(m.link, slotId, sd.weights, sd.spec or spec, alt),
+                                ReplacedSlots(sd.slots, slotId, twoHand))
+                        end
                         sc[slotId] = v or 0
                     end
                     m.scores[spec] = sc
@@ -976,11 +1069,16 @@ local function SpecDelta(alt, spec, sd, link, equipLoc, reqLevel)
     end
 
     local best, bestSlot, eqBest, bar, setGain, setBreak
-    -- replaced: the equipped slots the new item takes over (for set bonuses)
+    local newHit -- the item's Hit Rating, read once when the alt has a hit curve
+    -- replaced: the equipped slots the new item takes over (for set bonuses and the hit curve)
     local function Try(slotId, newScore, owned, equipped, stashIt, replaced)
         if not newScore then return end
-        local sDelta, gained, broken = SetDelta(sd, spec, link, replaced or { slotId })
+        local sDelta, gained, broken, setHit = SetDelta(sd, spec, link, replaced or { slotId })
         newScore = newScore + sDelta
+        if sd.hitCap then
+            newHit = newHit or HitOf(link, slotId, w, spec, alt)
+            newScore = newScore + CapFix(sd.hitCap, slots, newHit, replaced or { slotId }, setHit)
+        end
         local d = newScore - owned
         if not best or d > best then
             best, bestSlot, bar = d, slotId, (owned > equipped) and stashIt or nil

@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.5
+
+### 🎯 Hit Cap (WoW Forever)
+- Alt upgrades value hit on each alt's own hit cap, like the Gear Judge tooltip: hit an alt doesn't need counts for little, and an item that drops it below the cap costs full value. Hit from set bonuses and enchants counts too. Log into each alt once to save its cap (needs Gear Judge 3.2.8).
+
 ## 🚀 v1.0.4
 
 ### 🎨 New Look
