@@ -1187,8 +1187,10 @@ local function JudgeForAlt(alt, link, info, onlySpec, vsEquipped)
             local d, slotId, eqD, bar, gained, broken = SpecDelta(alt, spec, sd, link, info.equipLoc, info.reqLevel)
             if vsEquipped then d, bar = eqD, nil end
             if slotId then res.slot = res.slot or slotId end
-            if eqD and eqD > 0.05 and (not d or d <= 0.05) and bar then stashedBy = stashedBy or bar end
-            if d and d > 0.05 and (not res.delta or d > res.delta) then
+            -- the core tooltip's own upgrade threshold (MSC.VERDICT_EPS, 0.01): was 0.05, so small alt upgrades had no mark
+            local eps = MSC.VERDICT_EPS or 0.01
+            if eqD and eqD > eps and (not d or d <= eps) and bar then stashedBy = stashedBy or bar end
+            if d and d > eps and (not res.delta or d > res.delta) then
                 res.state, res.delta, res.slot, res.spec = "up", d, slotId, spec
                 res.setGain, res.setBreak = gained, broken
                 res.pct = (sd.total or 0) > 0 and (d / sd.total * 100) or nil

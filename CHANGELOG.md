@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.0.6
+
+### 🐛 Fixes
+- Small alt upgrades get their mark now: the cutoff matches Gear Judge's tooltip (0.01 instead of 0.05).
+
 ## 🚀 v1.0.5
 
 ### 🎯 Hit Cap (WoW Forever)
