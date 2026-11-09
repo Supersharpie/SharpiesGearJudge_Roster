@@ -848,6 +848,7 @@ local function TakeSnapshot()
         ap = (MSC.CtxAttackPower and MSC.CtxAttackPower()) or nil,
         statsOnly = statsOnly,
         level = UnitLevel("player"),
+        money = GetMoney and GetMoney() or nil,   -- copper; also kept current by PLAYER_MONEY
         updated = time(),
         core = CoreVersion(),   -- weights version (OldWeights)
         canDW = canDW,
@@ -1424,7 +1425,14 @@ end
 -- =========================================================================
 local LABEL_W, COL_W, ROW_H, HEAD_H, GRID_TOP = 100, 140, 22, 40, -116
 local page, cols, rowFrames, firstCol, checkLink = nil, {}, {}, 1, nil
-local extraRows = { "TOTAL", "CHECK", "UPDATED" }
+local extraRows = { "TOTAL", "CHECK", "UPDATED", "MONEY" }
+
+-- Copper as the game shows it (gold/silver/copper icons).
+local function MoneyText(copper)
+    copper = math_floor(copper or 0)
+    if GetCoinTextureString then return GetCoinTextureString(copper, 12) end
+    return string_format("%dg %ds %dc", math_floor(copper / 10000), math_floor(copper / 100) % 100, copper % 100)
+end
 
 -- Core theme (flat panels, one accent); nil on older cores, which keep the old colours.
 local function Theme() return MSC and MSC.Theme end
@@ -1734,9 +1742,11 @@ local function FillColumn(col, entry, judge)
     end
 
     local base = #GEAR_SLOTS
-    local total, check, upd = col.cells[base + 1], col.cells[base + 2], col.cells[base + 3]
-    for _, c in ipairs({ total, check, upd }) do c.icon:Hide(); c.link = nil; c.scoreText = nil; c.stashList = nil; c.bg:SetColorTexture(0, 0, 0, 0); c.mark:Hide(); c:Show() end
+    local total, check, upd, money = col.cells[base + 1], col.cells[base + 2], col.cells[base + 3], col.cells[base + 4]
+    for _, c in ipairs({ total, check, upd, money }) do c.icon:Hide(); c.link = nil; c.scoreText = nil; c.stashList = nil; c.bg:SetColorTexture(0, 0, 0, 0); c.mark:Hide(); c:Show() end
     total.text:SetText(ThemeHex("Accent", "|cffffd100") .. string_format("%.1f", sd and sd.total or 0) .. "|r")
+    -- Saved before money was recorded: unknown until that character logs in.
+    money.text:SetText(alt.money and ("|cffffffff" .. MoneyText(alt.money) .. "|r") or ("|cff888888" .. L["needs login"] .. "|r"))
 
     if not checkLink then
         check:Hide()
@@ -1880,8 +1890,16 @@ end
 
 local function RefreshPage()
     if not page or not page:IsVisible() or not DB then return end
-    if ApplyMode() then RefreshFinder(); return end
+    local finder = ApplyMode()
     local list = SortedAlts()
+    local copper, missing = 0, 0
+    for _, entry in ipairs(list) do
+        if entry.alt.money then copper = copper + entry.alt.money else missing = missing + 1 end
+    end
+    page.money.missing = missing
+    page.money.text:SetText(ThemeHex("Accent", "|cffffd100") .. L["Gold on all characters"] .. ":|r  " .. MoneyText(copper))
+    page.money:SetShown(#list > 0)
+    if finder then RefreshFinder(); return end
     local visible = math_max(1, math_floor((page:GetWidth() - LABEL_W - 8) / COL_W))
     if firstCol > math_max(1, #list - visible + 1) then firstCol = math_max(1, #list - visible + 1) end
 
@@ -2042,6 +2060,25 @@ local function BuildPage(parent)
     rowFrames.TOTAL = RowLabel(base + 1, L["Total"])
     rowFrames.CHECK = RowLabel(base + 2, L["This item"])
     rowFrames.UPDATED = RowLabel(base + 3, L["Updated"])
+    rowFrames.MONEY = RowLabel(base + 4, L["Gold"])
+
+    -- Gold of every character in the grid, added up (top right, under the check slot)
+    page.money = CreateFrame("Frame", nil, page)
+    page.money:SetSize(300, 16)
+    page.money:SetPoint("TOPRIGHT", -16, -60)
+    page.money:EnableMouse(true)
+    page.money.text = page.money:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    page.money.text:SetPoint("RIGHT"); page.money.text:SetJustifyH("RIGHT")
+    page.money:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText(L["Gold on all characters"])
+        GameTooltip:AddLine(L["The gold each character in the grid had when you last played it, added up."], 1, 1, 1, true)
+        if (self.missing or 0) > 0 then
+            GameTooltip:AddLine(string_format(L["Not counted yet: %d (log in on them once)."], self.missing), 1, 0.53, 0, true)
+        end
+        GameTooltip:Show()
+    end)
+    page.money:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- Paging
     page.prev = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
@@ -2225,6 +2262,7 @@ ev:RegisterEvent("MAIL_SEND_SUCCESS")
 ev:RegisterEvent("MAIL_FAILED")
 ev:RegisterEvent("BANKFRAME_CLOSED")
 ev:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
+ev:RegisterEvent("PLAYER_MONEY")
 for _, e in ipairs({ "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED" }) do
     pcall(ev.RegisterEvent, ev, e)
 end
@@ -2256,6 +2294,16 @@ ev:SetScript("OnEvent", function(self, event, arg1)
         if page and page:IsVisible() and not Roster.refreshQueued then
             Roster.refreshQueued = true
             C_Timer.After(0.3, function() Roster.refreshQueued = false; RefreshPage() end)
+        end
+    elseif event == "PLAYER_MONEY" then
+        -- Only the amount changes: no full snapshot (the next one saves it too).
+        local me = DB.chars[PlayerKey()]
+        if me then
+            me.money = GetMoney()
+            if page and page:IsVisible() and not Roster.refreshQueued then
+                Roster.refreshQueued = true
+                C_Timer.After(0.3, function() Roster.refreshQueued = false; RefreshPage() end)
+            end
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
         RequestSnapshot(6)     -- talents and the core's weights settle after login

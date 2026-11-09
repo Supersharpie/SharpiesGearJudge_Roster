@@ -1,6 +1,6 @@
 # Sharpie's Gear Judge - Roster (Alt Upgrades)
 
-**Version 1.0.6** | Requires **Sharpie's Gear Judge** | Works on **WoW Forever**, **Classic Era** and **TBC Anniversary**
+**Version 1.1.0** | Requires **Sharpie's Gear Judge** | Works on **WoW Forever**, **Classic Era** and **TBC Anniversary**
 
 A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance which of your other characters a BoE item would upgrade, and by how much.
 
@@ -33,6 +33,7 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 - A blue **+** on a cell means a better item for that slot is waiting in that character's bags, bank or mail (hover to see it).
 - Click a character's name to switch between their saved specs. Remove old characters with the **x**.
 - Each column shows when that character was last updated.
+- **Gold**: each character's gold, plus the total across all your characters at the top of the tab.
 
 ### 🔎 BoE Finder
 - The **BoE Finder** button on the Roster tab lists every tradeable item your characters are holding (bags, bank and mailbox) that upgrades another of your characters, biggest upgrade first, with who holds it and who to send it to.

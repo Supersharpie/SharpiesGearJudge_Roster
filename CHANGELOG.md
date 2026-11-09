@@ -1,5 +1,12 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.1.0
+
+### 💰 Gold on All Characters
+- New **Gold** row on the Roster grid: each character's gold, saved when you play it.
+- The total across the characters in the grid shows at the top right of the Roster tab.
+- Characters saved before this update show **needs login** until you log in on them once.
+
 ## 🚀 v1.0.6
 
 ### 🐛 Fixes
