@@ -1367,7 +1367,9 @@ local function DrawTooltip(tooltip)
     local info = ItemInfo(link)
     if not info then return end  -- the core re-sets the tooltip once the item loads
     -- Tooltips still being built: the core waits a frame too, and its timer was queued first.
-    if not tooltip:IsVisible() then
+    -- An owned GameTooltip is drawn now even while hidden (hooks run before the client shows
+    -- it; the auction house hides and rebuilds it 5 times a second, so waiting made it blink).
+    if not tooltip:IsVisible() and not (tooltip == GameTooltip and tooltip:GetOwner() ~= nil) then
         C_Timer.After(0, function() if tooltip:IsVisible() then DrawTooltip(tooltip) end end)
         return
     end
@@ -1392,7 +1394,7 @@ local function DrawTooltip(tooltip)
         left = left .. (res.me and (" |cff888888" .. L["(you)"] .. "|r") or StaleNote(alt))
         tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
     end
-    tooltip:Show()
+    if tooltip:IsVisible() then tooltip:Show() end
 end
 
 local function HookTooltip(tt)
@@ -1580,7 +1582,7 @@ function Roster.DrawOwnWaiting(tooltip, link)
         tooltip:AddDoubleLine("  " .. x.it.link .. " |cff888888(" .. WhereText(x.it.where) .. ")|r",
             "|cff00ff00+" .. string_format("%.1f", x.score - e.score) .. "|r" .. lvl, 1, 1, 1, 1, 1, 1)
     end
-    tooltip:Show()
+    if tooltip:IsVisible() then tooltip:Show() end
     return true
 end
 

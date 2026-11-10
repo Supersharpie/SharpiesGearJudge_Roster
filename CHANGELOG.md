@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.1.1
+
+### 🐛 Fixes
+- Auction house: the Roster upgrade lines on item tooltips blinked on and off. They now stay put.
+
 ## 🚀 v1.1.0
 
 ### 💰 Gold on All Characters
