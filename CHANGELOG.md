@@ -1,5 +1,11 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.1.2
+
+### 🐛 Fixes
+- A deleted and remade character no longer shows twice (the old copy marked **needs login**). The old copy is removed when you log in on the new one.
+- A bag copy of an item you're wearing (two identical crafted cloaks, say) lists the characters it upgrades. Only the worn copy shows "Better items waiting".
+
 ## 🚀 v1.1.1
 
 ### 🐛 Fixes

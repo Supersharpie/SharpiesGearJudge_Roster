@@ -769,7 +769,25 @@ local function ClearArrivedMail(key, seen, gear, inboxComplete)
     if #list == 0 then DB.mailed[key] = nil end
 end
 
+-- A deleted and remade character gets a new GUID; its old entry (same name and
+-- realm, other key) would list as a separate alt. Drop it at login.
+local function DropOldCopies()
+    local key = PlayerKey()
+    local name = (MSC and MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player")
+    local realm = GetRealmName()
+    if not (DB and name and realm) then return end
+    local dropped = false
+    for k, alt in pairs(DB.chars) do
+        if k ~= key and alt.name == name and alt.realm == realm then
+            DB.chars[k], DB.mailed[k], DB.tooltipOff[k] = nil, nil, nil
+            dropped = true
+        end
+    end
+    if dropped then BumpRevision() end
+end
+
 local function TakeSnapshot()
+    if DB then DropOldCopies() end
     if not (DB and MSC and MSC.GetCurrentWeights and MSC.CurrentClass) then return false end
     local weights, spec = MSC.GetCurrentWeights()
     if type(weights) ~= "table" or not next(weights) or not spec then return false end
@@ -1568,6 +1586,8 @@ function Roster.DrawOwnWaiting(tooltip, link)
         if GetInventoryItemLink("player", s) == link then slotId = s; break end
     end
     if not slotId then return false end
+    -- A bag copy of the same item (identical link) isn't the worn one: alt lines.
+    if MSC.IsHoveredBagCopy and MSC.IsHoveredBagCopy(tooltip, link) then return false end
     local me = DB.chars[PlayerKey()]
     local sd = me and me.specs and me.specs[me.active]
     local e = sd and sd.slots and sd.slots[slotId]
