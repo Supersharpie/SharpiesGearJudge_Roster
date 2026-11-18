@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.1.3
+
+### 🐛 Fixes
+- WoW Forever: an alt's Expertise is valued on its cap curve, as the tooltips do (needs Gear Judge 3.4.5).
+
 ## 🚀 v1.1.2
 
 ### 🐛 Fixes

@@ -474,7 +474,27 @@ local function CapFix(snap, slots, newHit, replaced, setHit)
     return (ok and tonumber(c)) or 0
 end
 
-local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pairBonus, hitCap)
+-- Forever expertise (2026-11-17, core 3.4.5+): the same curve against its dodge / parry caps, saved as sd.expCap
+-- (MSC.ForeverExpertiseSnapshot) with each worn slot's Expertise Rating (slots[].exp). Set bonuses are left out.
+local function ReadExp(link, slotId, weights, spec, alt)
+    return MSC.ExpertiseRatingOf(StatsOnlyFor(alt, link, MSC.SafeGetItemStats(link, slotId, weights, spec)))
+end
+local function ExpOf(link, slotId, weights, spec, alt)
+    if not (link and MSC.ExpertiseRatingOf) then return 0 end
+    local ok, v = WithScoring(alt, ReadExp, link, slotId, weights, spec, alt)
+    return (ok and tonumber(v)) or 0
+end
+local function ExpFix(snap, slots, newExp, replaced)
+    if not (snap and snap.rating and MSC.ForeverHitCapCorrectionFor) then return 0 end
+    local out = 0
+    for _, s in ipairs(replaced) do local e = slots[s]; out = out + (e and e.exp or 0) end
+    local change = newExp - out
+    if change == 0 then return 0 end
+    local ok, c = pcall(MSC.ForeverHitCapCorrectionFor, snap, snap.rating, snap.rating + change)
+    return (ok and tonumber(c)) or 0
+end
+
+local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pairBonus, hitCap, expCap)
     local out = {}
     for _, it in ipairs(stashItems) do
         local cands = CandidateSlots(it.loc, canDW)
@@ -486,6 +506,9 @@ local function SnapshotStash(weights, spec, slots, stashItems, state, canDW, pai
                 if not sc then state.missing = true; sc = 0 end
                 if hitCap then
                     sc = sc + CapFix(hitCap, slots, HitOf(it.link, slotId, weights, spec), ReplacedSlots(slots, slotId, TWO_HAND[it.loc]))
+                end
+                if expCap then
+                    sc = sc + ExpFix(expCap, slots, ExpOf(it.link, slotId, weights, spec), ReplacedSlots(slots, slotId, TWO_HAND[it.loc]))
                 end
                 scores[slotId] = sc
                 -- a two-hander replaces both hands, so it has to beat both
@@ -516,6 +539,7 @@ end
 local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
     local slots, total = {}, 0
     local cap = MSC.ForeverHitCapSnapshot and MSC.ForeverHitCapSnapshot(weights)
+    local ecap = MSC.ForeverExpertiseSnapshot and MSC.ForeverExpertiseSnapshot(weights)
     for _, slotId in ipairs(GEAR_SLOTS) do
         local link = gear[slotId]
         if link then
@@ -524,7 +548,8 @@ local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
             if not raw then state.missing = true; raw = 0 end
             local loc = select(4, GetItemInfoInstant(link))
             slots[slotId] = { link = link, raw = raw, score = raw, twoHand = TWO_HAND[loc] or nil,
-                              hit = cap and HitOf(link, slotId, weights, spec) or nil }
+                              hit = cap and HitOf(link, slotId, weights, spec) or nil,
+                              exp = ecap and ExpOf(link, slotId, weights, spec) or nil }
         end
     end
     -- Weapon bonuses: each hand's bonus next to the other hand (what a swap in
@@ -570,9 +595,26 @@ local function SnapshotSpec(weights, spec, gear, state, stashItems, canDW)
         end
         hitCap = { w = cap.w, full = cap.full, base = cap.base, knees = knees, rating = rating }
     end
-    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state, canDW, pairBonus, hitCap)
+    -- The saved expertise curve (2026-11-17), with this gear's Expertise Rating (the worn gear's real total,
+    -- set bonuses in, when this is the worn gear; else the items' own)
+    local expCap
+    if ecap then
+        local knees = {}
+        for i, k in ipairs(ecap.knees) do knees[i] = { cap = k.cap, mult = k.mult } end
+        local worn = true
+        for _, slotId in ipairs(GEAR_SLOTS) do
+            if gear[slotId] ~= GetInventoryItemLink("player", slotId) then worn = false; break end
+        end
+        local rating = worn and MSC.GetGearExpertiseRating and MSC.GetGearExpertiseRating()
+        if not rating then
+            rating = 0
+            for _, e in pairs(slots) do rating = rating + (e.exp or 0) end
+        end
+        expCap = { w = ecap.w, full = ecap.full, base = ecap.base, knees = knees, rating = rating }
+    end
+    local stash = SnapshotStash(weights, spec, slots, stashItems or {}, state, canDW, pairBonus, hitCap, expCap)
     return { pretty = PrettyName(spec), weights = CopyScalars(weights), slots = slots, total = total, stash = stash,
-             pairBonus = pairBonus, talentRanks = TalentRanks(), hitCap = hitCap }
+             pairBonus = pairBonus, talentRanks = TalentRanks(), hitCap = hitCap, expCap = expCap }
 end
 
 local AltCanUse, ItemInfo  -- defined in sections 4 and 5
@@ -1034,6 +1076,10 @@ local function MailedFor(alt, spec, sd)
                             v = v + CapFix(sd.hitCap, sd.slots, HitOf(m.link, slotId, sd.weights, sd.spec or spec, alt),
                                 ReplacedSlots(sd.slots, slotId, twoHand))
                         end
+                        if v and sd.expCap then
+                            v = v + ExpFix(sd.expCap, sd.slots, ExpOf(m.link, slotId, sd.weights, sd.spec or spec, alt),
+                                ReplacedSlots(sd.slots, slotId, twoHand))
+                        end
                         sc[slotId] = v or 0
                     end
                     m.scores[spec] = sc
@@ -1097,6 +1143,9 @@ local function SpecDelta(alt, spec, sd, link, equipLoc, reqLevel)
         if sd.hitCap then
             newHit = newHit or HitOf(link, slotId, w, spec, alt)
             newScore = newScore + CapFix(sd.hitCap, slots, newHit, replaced or { slotId }, setHit)
+        end
+        if sd.expCap then
+            newScore = newScore + ExpFix(sd.expCap, slots, ExpOf(link, slotId, w, spec, alt), replaced or { slotId })
         end
         local d = newScore - owned
         if not best or d > best then
