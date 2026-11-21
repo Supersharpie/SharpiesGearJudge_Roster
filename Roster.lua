@@ -63,6 +63,12 @@ local scanTip  -- hidden tooltip for text the item API doesn't give (sections 3 
 -- 1. SMALL HELPERS
 -- =========================================================================
 -- A character's Roster key is its GUID: WoW Forever names have two parts and
+-- The realm, steady through the session (the core keeps it when the game hands back an empty one).
+local function MyRealm()
+    if MSC and MSC.GetRealm then return MSC.GetRealm() end
+    return GetRealmName() or "Local"
+end
+
 -- UnitName returns only the first, so names can repeat across characters.
 local function PlayerKey()
     local guid = UnitGUID and UnitGUID("player")
@@ -816,7 +822,7 @@ end
 local function DropOldCopies()
     local key = PlayerKey()
     local name = (MSC and MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player")
-    local realm = GetRealmName()
+    local realm = MyRealm()
     if not (DB and name and realm) then return end
     local dropped = false
     for k, alt in pairs(DB.chars) do
@@ -900,7 +906,7 @@ local function TakeSnapshot()
     DB.chars[key] = {
         key = key,
         name = (MSC.GetCharacterName and MSC.GetCharacterName()) or UnitName("player"),
-        realm = GetRealmName(),
+        realm = MyRealm(),
         faction = UnitFactionGroup("player"),
         class = cls,
         race = UnitRace("player"),
@@ -1295,7 +1301,7 @@ local function SortKey(res) return res.pct or 1e9 end
 
 local function InScope(alt)
     if not DB.settings.SameRealm then return true end
-    return alt.realm == GetRealmName() and alt.faction == UnitFactionGroup("player")
+    return alt.realm == MyRealm() and alt.faction == UnitFactionGroup("player")
 end
 
 -- All alts (not the current character) that this item upgrades, biggest first.
@@ -2276,7 +2282,7 @@ local function RecipientKey(name)
     local n, r = string_match(name, "^([^%-]+)%-(.+)$")
     n = string.lower(n or name)
     r = r and string.lower(r:gsub("%s", "")) or nil
-    local myRealm = string.lower((GetRealmName() or ""):gsub("%s", ""))
+    local myRealm = string.lower((MyRealm() or ""):gsub("%s", ""))
     for key, alt in pairs(DB.chars) do
         local altRealm = string.lower((alt.realm or ""):gsub("%s", ""))
         if string.lower(alt.name or "") == n and altRealm == (r or myRealm) then return key end

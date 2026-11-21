@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.1.4
+
+### 🐛 Fixes
+- WoW Forever: on logins where the game gives no realm name, alts no longer drop out of "same realm only" and characters aren't saved with a blank realm (needs Gear Judge 3.7.0).
+
 ## 🚀 v1.1.3
 
 ### 🐛 Fixes
