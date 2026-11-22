@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.2.0
+
+### ✨ Daylight UI Rich Tooltips
+- With Daylight UI's Rich tooltips, Roster upgrades get their own section on the card: each alt's name and gain on one row, spec, level and when on the next, so names are no longer cut short (needs Gear Judge 3.8.0).
+
 ## 🚀 v1.1.4
 
 ### 🐛 Fixes

@@ -1454,18 +1454,33 @@ local function DrawTooltip(tooltip)
     local list = UpgradesFor(link)
     if not list or #list == 0 then return end
 
-    tooltip:AddLine(" ")
-    tooltip:AddLine("|cff00ccff" .. L["Roster upgrades:"] .. "|r")
+    -- Daylight UI's Rich card (core TooltipManager.lua MSC.Rich): a section, each alt as two short rows (name and gain,
+    -- then spec and level with when), so the card doesn't cut the name; elsewhere the one line as before
+    local rich = MSC.Rich and MSC.Rich.On and MSC.Rich.On(tooltip)
+    if rich then
+        MSC.Rich.Gap(tooltip)
+        MSC.Rich.Section(tooltip, MSC.Rich.Label(L["Roster upgrades:"]))
+    else
+        tooltip:AddLine(" ")
+        tooltip:AddLine("|cff00ccff" .. L["Roster upgrades:"] .. "|r")
+    end
     local max = DB.settings.MaxLines or DEFAULTS.MaxLines
     for i, res in ipairs(list) do
         if i > max then
-            tooltip:AddLine("|cff888888" .. string_format(L["...and %d more"], #list - max) .. "|r")
+            if rich then MSC.Rich.Hint(tooltip, string_format(L["...and %d more"], #list - max))
+            else tooltip:AddLine("|cff888888" .. string_format(L["...and %d more"], #list - max) .. "|r") end
             break
         end
         local alt = res.alt
-        local left = "  " .. ColoredName(alt) .. " |cff888888(" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. ")|r"
-        left = left .. (res.me and (" |cff888888" .. L["(you)"] .. "|r") or StaleNote(alt))
-        tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
+        if rich then
+            local name = ColoredName(alt) .. (res.me and (" |cff888888" .. L["(you)"] .. "|r") or StaleNote(alt)) .. SetNote(res)
+            MSC.Rich.Row(tooltip, name, TierText(res))
+            MSC.Rich.Row(tooltip, "  |cff888888" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. "|r", WhenText(res))
+        else
+            local left = "  " .. ColoredName(alt) .. " |cff888888(" .. SpecLabel(alt.specs[res.spec]) .. " " .. (alt.level or "?") .. ")|r"
+            left = left .. (res.me and (" |cff888888" .. L["(you)"] .. "|r") or StaleNote(alt))
+            tooltip:AddDoubleLine(left .. SetNote(res), TierText(res) .. " |cff888888-|r " .. WhenText(res), 1, 1, 1, 1, 1, 1)
+        end
     end
     if tooltip:IsVisible() then tooltip:Show() end
 end
