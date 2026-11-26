@@ -1,6 +1,6 @@
 # Sharpie's Gear Judge - Roster (Alt Upgrades)
 
-**Version 1.1.4** | Requires **Sharpie's Gear Judge** | Works on **WoW Forever**, **Classic Era** and **TBC Anniversary**
+**Version 1.2.1** | Requires **Sharpie's Gear Judge** | Works on **WoW Forever**, **Classic Era** and **TBC Anniversary**
 
 A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance which of your other characters a BoE item would upgrade, and by how much.
 
@@ -17,6 +17,7 @@ A plugin for **Sharpie's Gear Judge (SGJ)** for altoholics: see at a glance whic
 - Set bonuses count: a line says when an item **completes** a set bonus for that alt, and an item that would **break** one isn't shown as an upgrade unless it's still better overall.
 - Relics (librams, idols, totems) are scored with the alt's own class data, and a second copy of a unique ring or trinket the alt already wears doesn't count as an upgrade.
 - Class weapon talents count too (Weaponmaster, Hack and Slash, the TBC weapon specializations and so on), using that alt's own talents and level, as do racial weapon bonuses on versions that still have them (WoW Forever has removed its weapon racials).
+- **Enchanters (WoW Forever, with Gear Judge 3.9.0):** Enchanting recipe tooltips list the alts that gain from the enchant, and gear an alt would use is never marked safe to disenchant.
 - Only the **top 3** alts are listed by default (change it on the Roster tab), and any alt can be left off tooltips with the checkbox on its column.
 
 ### 🎒 Bags, Bank and Mail Count Too

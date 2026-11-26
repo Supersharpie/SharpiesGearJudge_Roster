@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.2.1
+
+### ✨ For Gear Judge 3.9.0
+- Enchanting recipe tooltips list your alts that gain from the enchant, and gear an alt would use is never marked safe to disenchant.
+
 ## 🚀 v1.2.0
 
 ### ✨ Daylight UI Rich Tooltips

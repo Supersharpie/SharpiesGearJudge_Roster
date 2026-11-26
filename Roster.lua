@@ -1342,6 +1342,40 @@ local function UpgradesFor(link)
     return list
 end
 
+-- 1.2.1: for the core's enchanter features (Enchanting.lua, Gear Judge 3.9.0).
+-- MSC.RosterUpgradesFor(link): the alts (not you) this item upgrades, as the tooltip lists them.
+-- MSC.RosterEnchantGains(enchantID): { label, gain } per alt whose best spec gains from that enchant
+-- on the item it wears in the enchant's slot (against the enchant on it now), biggest first.
+if MSC then
+    MSC.RosterUpgradesFor = function(link)
+        local out = {}
+        for _, r in ipairs(UpgradesFor(link) or {}) do if not r.me then out[#out + 1] = r end end
+        return out
+    end
+    MSC.RosterEnchantGains = function(enchantID)
+        local E = MSC.Enchanting
+        if not E or not DB or not DB.chars then return {} end
+        local me, out = PlayerKey(), {}
+        for key, alt in pairs(DB.chars) do
+            if key ~= me and InScope(alt) and not DB.tooltipOff[key] then
+                local best, bestSlot
+                for spec, sd in pairs(alt.specs or {}) do
+                    if sd.weights and sd.slots then
+                        for _, slot in ipairs(E.SlotsOf(enchantID)) do
+                            local e = sd.slots[slot]
+                            local g = e and E.Gain(enchantID, sd.weights, slot, e.link)
+                            if g and g > 0.05 and (not best or g > best) then best, bestSlot = g, slot end
+                        end
+                    end
+                end
+                if best then out[#out + 1] = { label = ColoredName(alt) .. " |cff888888(" .. E.SlotName(bestSlot) .. ")|r", gain = best } end
+            end
+        end
+        table_sort(out, function(a, b) return a.gain > b.gain end)
+        return out
+    end
+end
+
 -- BoE Finder: every tradeable item your characters hold (bags, plus bank and
 -- mail from their last visit) that upgrades another of your characters on the
 -- same realm and faction (who can be mailed it), biggest upgrade first. The
