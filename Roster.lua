@@ -1344,7 +1344,8 @@ end
 
 -- 1.2.1: for the core's enchanter features (Enchanting.lua, Gear Judge 3.9.0).
 -- MSC.RosterUpgradesFor(link): the alts (not you) this item upgrades, as the tooltip lists them.
--- MSC.RosterEnchantGains(enchantID): { label, gain } per alt whose best spec gains from that enchant
+-- MSC.RosterEnchantGains(enchantID[, slots]): { label, gain } per alt whose best spec gains from that enchant (1.2.2: slots =
+-- only those, the recipe's own: one enchant can come from a different recipe per slot)
 -- on the item it wears in the enchant's slot (against the enchant on it now), biggest first.
 if MSC then
     MSC.RosterUpgradesFor = function(link)
@@ -1352,7 +1353,7 @@ if MSC then
         for _, r in ipairs(UpgradesFor(link) or {}) do if not r.me then out[#out + 1] = r end end
         return out
     end
-    MSC.RosterEnchantGains = function(enchantID)
+    MSC.RosterEnchantGains = function(enchantID, onlySlots)
         local E = MSC.Enchanting
         if not E or not DB or not DB.chars then return {} end
         local me, out = PlayerKey(), {}
@@ -1361,7 +1362,7 @@ if MSC then
                 local best, bestSlot
                 for spec, sd in pairs(alt.specs or {}) do
                     if sd.weights and sd.slots then
-                        for _, slot in ipairs(E.SlotsOf(enchantID)) do
+                        for _, slot in ipairs(onlySlots or E.SlotsOf(enchantID)) do
                             local e = sd.slots[slot]
                             local g = e and E.Gain(enchantID, sd.weights, slot, e.link)
                             if g and g > 0.05 and (not best or g > best) then best, bestSlot = g, slot end

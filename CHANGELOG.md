@@ -1,5 +1,10 @@
 # Sharpie's Gear Judge [Roster] - Version History
 
+## 🚀 v1.2.2
+
+### 🐛 Fixed
+- Enchant recipe tooltips list an alt's gain only on the slots that recipe enchants (Gear Judge 3.9.2).
+
 ## 🚀 v1.2.1
 
 ### ✨ For Gear Judge 3.9.0
